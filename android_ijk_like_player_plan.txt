@@ -1,0 +1,1016 @@
+# 自研 Android 播放器规划文档：从 0 到接近 ijkPlayer 效果
+
+目标：在 Android App 中实现一个类似 ijkPlayer 的播放器。第一阶段不追求完整复刻 ijkPlayer，而是先做出“能稳定播放本地 MP4 的软解播放器”，再逐步加入硬解、网络播放、缓冲、seek、OpenGL 渲染和 SDK 封装。
+
+============================================================
+一、总体目标
+============================================================
+
+最终播放器结构：
+
+Android UI 层
+    ↓
+PlayerView / SurfaceView / TextureView
+    ↓
+Kotlin / Java Player API
+    ↓
+JNI
+    ↓
+C++ Player Core
+    ↓
+FFmpeg Demuxer
+    ↓
+PacketQueue
+    ↓
+AudioDecoder        VideoDecoder
+    ↓                ↓
+AudioTrack          ANativeWindow / OpenGL / MediaCodec
+    ↓                ↓
+AudioClock     ←    VideoSync
+
+最终希望支持：
+
+1. 本地 MP4 播放
+2. HTTP / HTTPS 视频播放
+3. HLS / m3u8 播放
+4. H.264 / H.265 视频解码
+5. AAC / MP3 / Opus 音频解码
+6. 音视频同步
+7. 播放、暂停、恢复、停止、释放
+8. seek 拖动进度
+9. 缓冲状态回调
+10. MediaCodec 硬解
+11. OpenGL YUV 渲染
+12. 类似 ijkPlayer 的 SDK 封装方式
+
+============================================================
+二、主要阶段规划
+============================================================
+
+第 1 阶段：Android + FFmpeg 工程跑通
+第 2 阶段：解封装 Demuxer
+第 3 阶段：音频解码 + AudioTrack 播放
+第 4 阶段：视频解码 + Surface 渲染
+第 5 阶段：音视频同步
+第 6 阶段：播放器基础控制 API
+第 7 阶段：pause / resume / seek / release 稳定性
+第 8 阶段：OpenGL 渲染优化
+第 9 阶段：MediaCodec 硬解
+第 10 阶段：网络播放和缓冲
+第 11 阶段：封装成类似 ijkPlayer 的 SDK
+第 12 阶段：完善兼容性、错误处理和性能优化
+
+============================================================
+三、第 1 阶段：Android + FFmpeg 工程跑通
+============================================================
+
+目标：
+Android App 能通过 JNI 调用 FFmpeg，并成功打开一个本地 MP4 文件，打印音视频流信息。
+
+要做的事情：
+
+1. 新建 Android Native C++ 工程
+2. 集成 FFmpeg 的 include 和 so 文件
+3. 配置 CMakeLists.txt
+4. Kotlin / Java 层加载 native so
+5. Kotlin / Java 调用 native 方法
+6. Native 层调用 FFmpeg：
+   - avformat_open_input
+   - avformat_find_stream_info
+   - avcodec_get_name
+7. 打印视频流信息：
+   - video stream index
+   - video codec
+   - width
+   - height
+8. 打印音频流信息：
+   - audio stream index
+   - audio codec
+   - sample rate
+   - channel count
+9. 打印视频总时长
+
+成功标准：
+
+App 页面或者 Logcat 能看到类似信息：
+
+Open file success
+Duration: 120 seconds
+Stream count: 2
+
+Video Stream Index: 0
+Video Codec: h264
+Width: 1920
+Height: 1080
+
+Audio Stream Index: 1
+Audio Codec: aac
+Sample Rate: 44100
+Channels: 2
+
+这一阶段不要做：
+
+1. 不要做播放
+2. 不要做 Surface 渲染
+3. 不要做 AudioTrack
+4. 不要做 MediaCodec
+5. 不要做网络播放
+6. 不要做音视频同步
+
+============================================================
+四、第 2 阶段：解封装 Demuxer
+============================================================
+
+目标：
+把一个视频文件拆成音频 AVPacket 和视频 AVPacket。
+
+Demuxer 模块职责：
+
+1. 打开媒体地址
+2. 分析媒体流信息
+3. 找到音频流 index
+4. 找到视频流 index
+5. 循环读取 AVPacket
+6. 判断 packet 属于音频还是视频
+7. 音频 packet 放入 audioPacketQueue
+8. 视频 packet 放入 videoPacketQueue
+9. 支持 seek
+10. 支持 close
+
+建议设计：
+
+class Demuxer {
+public:
+    bool open(const char* url);
+    int readPacket(AVPacket* packet);
+    int getAudioStreamIndex();
+    int getVideoStreamIndex();
+    AVCodecParameters* getAudioCodecParameters();
+    AVCodecParameters* getVideoCodecParameters();
+    int64_t getDuration();
+    bool seek(int64_t positionMs);
+    void close();
+};
+
+内部主要使用：
+
+1. avformat_open_input
+2. avformat_find_stream_info
+3. av_read_frame
+4. av_seek_frame
+5. avformat_close_input
+
+成功标准：
+
+1. 能持续读取 packet
+2. 能区分音频 packet 和视频 packet
+3. 能打印 packet 的 pts、dts、size、stream_index
+4. 读取到文件结束时能正常退出
+
+============================================================
+五、第 3 阶段：音频解码 + AudioTrack 播放
+============================================================
+
+目标：
+先只播放声音，不显示画面。
+
+音频播放流程：
+
+AVPacket
+    ↓
+avcodec_send_packet
+    ↓
+avcodec_receive_frame
+    ↓
+AVFrame
+    ↓
+swr_convert 重采样
+    ↓
+PCM
+    ↓
+AudioTrack.write()
+    ↓
+扬声器播放声音
+
+要做的事情：
+
+1. 找到音频流
+2. 根据 AVCodecParameters 创建 AVCodecContext
+3. 查找音频解码器
+4. 打开音频解码器
+5. 创建 SwrContext
+6. 把音频统一转成常用格式：
+   - sample format: AV_SAMPLE_FMT_S16
+   - sample rate: 44100 或原始采样率
+   - channel layout: stereo
+7. 把解码后的 PCM 送给 Android AudioTrack
+8. 播放时更新 audioClock
+
+建议第一版：
+
+1. C++ 负责 FFmpeg 解码
+2. Kotlin / Java 层负责 AudioTrack 播放
+3. Native 通过 JNI 回调 PCM 数据
+
+也可以后期改成 Native 层直接播放。
+
+成功标准：
+
+1. 打开 MP4 后能听到声音
+2. 声音不卡顿
+3. 播放完成后线程能退出
+4. release 不崩溃
+
+注意点：
+
+1. AVPacket 用完要 av_packet_unref
+2. AVFrame 用完要 av_frame_unref
+3. seek 后要 avcodec_flush_buffers
+4. release 时要先停止线程，再释放解码器
+5. AudioTrack 的采样率、声道数、采样格式要和 PCM 数据一致
+
+============================================================
+六、第 4 阶段：视频解码 + Surface 渲染
+============================================================
+
+目标：
+先只显示视频画面，不管声音同步。
+
+第一版视频渲染流程：
+
+AVPacket
+    ↓
+avcodec_send_packet
+    ↓
+avcodec_receive_frame
+    ↓
+AVFrame YUV420P
+    ↓
+sws_scale 转 RGBA
+    ↓
+ANativeWindow_lock
+    ↓
+memcpy 到 window buffer
+    ↓
+ANativeWindow_unlockAndPost
+    ↓
+Surface 显示画面
+
+要做的事情：
+
+1. 找到视频流
+2. 根据 AVCodecParameters 创建 AVCodecContext
+3. 查找视频解码器
+4. 打开视频解码器
+5. 解码 H.264 / H.265 / MPEG4 等视频
+6. 使用 sws_scale 把 YUV 转成 RGBA
+7. 使用 ANativeWindow 渲染到 Surface
+8. 处理 Surface 创建、变化、销毁
+
+建议第一版：
+
+1. 先用 ANativeWindow + RGBA 渲染
+2. 不要一开始就做 OpenGL
+3. 不要一开始就做 MediaCodec
+4. 不要一开始就做同步
+
+成功标准：
+
+1. 能看到视频画面
+2. 画面尺寸正确
+3. 没有明显花屏
+4. 退出页面不崩溃
+5. Surface 销毁时 native 不继续渲染
+
+注意点：
+
+1. Surface 生命周期要处理好
+2. ANativeWindow 使用完要 ANativeWindow_release
+3. sws_getContext 创建后要 sws_freeContext
+4. 视频 frame 的 linesize 和目标 buffer stride 不一定一样，不能直接整块 memcpy
+5. 渲染线程退出前不要释放 window
+
+============================================================
+七、第 5 阶段：音视频同步
+============================================================
+
+目标：
+声音和画面同步播放。
+
+建议第一版同步策略：
+
+使用音频作为主时钟，视频跟随音频。
+
+原因：
+音频一旦写入 AudioTrack，播放节奏由系统音频设备控制，音频时钟通常更稳定，所以视频应该跟着音频走。
+
+核心逻辑：
+
+audioClock = 当前音频播放时间
+videoPts = 当前视频帧时间
+diff = videoPts - audioClock
+
+如果 diff > 0：
+    说明视频太快，需要等待 diff 时间后再渲染
+
+如果 diff < -0.05：
+    说明视频慢了，落后超过 50ms，可以考虑丢帧
+
+如果 diff 接近 0：
+    正常渲染
+
+伪代码：
+
+while playing:
+    frame = videoFrameQueue.pop()
+    videoPts = frame.pts
+    audioTime = audioClock.get()
+
+    diff = videoPts - audioTime
+
+    if diff > 0:
+        sleep(diff)
+
+    if diff < -0.05:
+        drop frame
+        continue
+
+    render(frame)
+
+要做的事情：
+
+1. 正确计算音频 PTS
+2. 正确计算视频 PTS
+3. 处理 time_base
+4. 维护 audioClock
+5. 维护 videoClock
+6. 视频渲染前根据 audioClock 判断是否等待或丢帧
+
+成功标准：
+
+1. 声音和嘴型基本同步
+2. 长时间播放不会越来越偏
+3. seek 后同步能恢复
+4. pause/resume 后同步不乱
+
+注意点：
+
+1. PTS 要乘以 time_base
+2. AV_NOPTS_VALUE 要特殊处理
+3. B 帧可能导致 dts 和 pts 不一样
+4. 音频 clock 不能简单用“解码到哪里”，应该尽量接近“播放到哪里”
+5. 初期可以简化，先用已写入 AudioTrack 的 PCM 时长估算
+
+============================================================
+八、第 6 阶段：播放器基础控制 API
+============================================================
+
+目标：
+把底层能力封装成 App 好用的播放器接口。
+
+建议 Kotlin / Java API：
+
+interface XPlayer {
+    fun setDataSource(url: String)
+    fun setSurface(surface: Surface)
+    fun prepareAsync()
+    fun start()
+    fun pause()
+    fun resume()
+    fun stop()
+    fun seekTo(positionMs: Long)
+    fun release()
+
+    fun getDuration(): Long
+    fun getCurrentPosition(): Long
+    fun isPlaying(): Boolean
+
+    fun setOnPreparedListener(listener: () -> Unit)
+    fun setOnCompletionListener(listener: () -> Unit)
+    fun setOnErrorListener(listener: (code: Int, msg: String) -> Unit)
+    fun setOnInfoListener(listener: (what: Int, extra: Int) -> Unit)
+}
+
+播放器状态：
+
+IDLE
+PREPARING
+PREPARED
+PLAYING
+PAUSED
+SEEKING
+BUFFERING
+COMPLETED
+ERROR
+RELEASED
+
+状态切换示例：
+
+IDLE
+    ↓ setDataSource
+INITIALIZED
+    ↓ prepareAsync
+PREPARING
+    ↓ onPrepared
+PREPARED
+    ↓ start
+PLAYING
+    ↓ pause
+PAUSED
+    ↓ resume
+PLAYING
+    ↓ completion
+COMPLETED
+    ↓ release
+RELEASED
+
+成功标准：
+
+1. App 层能像使用普通播放器一样调用
+2. 错误状态能回调出来
+3. 播放完成有 onCompletion
+4. prepare 完成有 onPrepared
+5. 当前播放进度可查询
+6. 总时长可查询
+
+============================================================
+九、第 7 阶段：pause / resume / seek / release 稳定性
+============================================================
+
+目标：
+让播放器真正可用，不容易崩溃、死锁、卡死。
+
+pause 要做：
+
+1. 设置 paused 标记
+2. 暂停读取/解码/渲染逻辑
+3. AudioTrack pause
+4. 保留当前队列数据
+5. 保留当前 clock
+
+resume 要做：
+
+1. 清除 paused 标记
+2. 唤醒等待的线程
+3. AudioTrack play
+4. 继续解码和渲染
+
+seek 要做：
+
+1. 设置 seeking 标记
+2. 暂停读取线程
+3. 清空 audioPacketQueue
+4. 清空 videoPacketQueue
+5. 清空 audioFrameQueue
+6. 清空 videoFrameQueue
+7. 调用 av_seek_frame
+8. 调用 avcodec_flush_buffers 清理解码器缓存
+9. 重置 audioClock
+10. 重置 videoClock
+11. 取消 seeking 标记
+12. 唤醒读取线程和解码线程
+
+release 要做：
+
+1. 设置 abort / released 标记
+2. 唤醒所有队列
+3. 停止读取线程
+4. 停止音频解码线程
+5. 停止视频解码线程
+6. 停止音频播放
+7. 等待所有线程 join
+8. 释放 AVPacket
+9. 释放 AVFrame
+10. 释放 AVCodecContext
+11. 释放 AVFormatContext
+12. 释放 SwrContext
+13. 释放 SwsContext
+14. 释放 ANativeWindow
+15. 清空 JNI 全局引用
+
+最容易出问题的地方：
+
+1. release 时线程还在用已经释放的对象
+2. seek 时队列没有清空
+3. seek 后解码器没有 flush
+4. pause 后队列阻塞无法退出
+5. Surface 销毁后 native 还在渲染
+6. AudioTrack release 后 native 还在写 PCM
+7. JNI 回调对象已经释放但 native 继续调用
+
+成功标准：
+
+1. 反复进入退出页面不崩溃
+2. 反复 start/pause/resume 不崩溃
+3. 反复 seek 不死锁
+4. 播放完成后能重新播放
+5. release 后不会再有 native 线程运行
+
+============================================================
+十、第 8 阶段：OpenGL 渲染优化
+============================================================
+
+目标：
+提高视频渲染性能，减少 YUV 转 RGBA 和内存拷贝。
+
+第一版使用：
+
+YUV
+    ↓
+sws_scale
+    ↓
+RGBA
+    ↓
+ANativeWindow
+
+优化后使用：
+
+YUV420P
+    ↓
+OpenGL ES 三纹理
+    ↓
+Fragment Shader 中 YUV 转 RGB
+    ↓
+Surface 显示
+
+要做的事情：
+
+1. 创建 EGL 环境
+2. 创建 OpenGL 渲染线程
+3. 创建 Y、U、V 三个纹理
+4. 上传 YUV 数据
+5. 编写 vertex shader
+6. 编写 fragment shader
+7. 处理视频宽高比
+8. 处理 Surface 变化
+9. 处理旋转角度
+10. 处理填充模式：
+    - fitCenter
+    - centerCrop
+    - fill
+
+成功标准：
+
+1. CPU 占用下降
+2. 画面更流畅
+3. 支持不同尺寸视频
+4. 支持横竖屏
+5. 支持画面比例控制
+
+============================================================
+十一、第 9 阶段：MediaCodec 硬解
+============================================================
+
+目标：
+让视频解码使用 Android 硬件解码，降低 CPU 占用，提高性能。
+
+硬解流程：
+
+FFmpeg 解封装
+    ↓
+读取 H.264 / H.265 packet
+    ↓
+处理 SPS / PPS / VPS
+    ↓
+喂给 MediaCodec
+    ↓
+MediaCodec 输出到 Surface
+
+要做的事情：
+
+1. FFmpeg 只负责 avformat_open_input 和 av_read_frame
+2. 判断视频编码格式：
+   - H.264
+   - H.265
+3. 获取 extradata
+4. 解析 SPS / PPS / VPS
+5. 创建 MediaCodec
+6. 配置 MediaFormat
+7. 设置 csd-0 / csd-1 / csd-2
+8. dequeueInputBuffer
+9. queueInputBuffer
+10. dequeueOutputBuffer
+11. releaseOutputBuffer
+12. 输出到 Surface
+
+H.264 两种常见格式：
+
+Annex-B：
+
+00 00 00 01 67 ...
+00 00 00 01 68 ...
+00 00 00 01 65 ...
+
+AVCC：
+
+长度 + NALU
+长度 + NALU
+长度 + NALU
+
+注意点：
+
+1. MP4 里的 H.264 通常是 AVCC 格式
+2. 裸 H.264 通常是 Annex-B 格式
+3. MediaCodec 对不同设备兼容性不一致
+4. 有些设备需要 Annex-B
+5. 有些设备需要 csd-0 / csd-1
+6. H.265 还需要 VPS
+7. 硬解失败后要能自动切换软解
+
+成功标准：
+
+1. H.264 MP4 能硬解播放
+2. CPU 占用明显低于软解
+3. 硬解失败能回退到软解
+4. 不同 Android 版本上能正常运行
+5. seek 后硬解能恢复
+
+============================================================
+十二、第 10 阶段：网络播放和缓冲
+============================================================
+
+目标：
+支持在线视频播放，接近 ijkPlayer 常见使用场景。
+
+支持格式：
+
+1. HTTP MP4
+2. HTTPS MP4
+3. HLS / m3u8
+4. FLV
+5. 后期再考虑 RTMP
+
+要做的事情：
+
+1. FFmpeg 打开网络 URL
+2. 设置超时时间
+3. 设置 reconnect
+4. 设置 buffer size
+5. 读取线程监控缓冲队列
+6. 队列数据不足时进入 BUFFERING
+7. 队列数据足够时退出 BUFFERING
+8. 回调缓冲百分比
+9. 回调网速
+10. 处理网络错误
+11. 处理 EOF
+12. 处理 m3u8 分片切换
+
+缓冲状态：
+
+PLAYING
+    ↓ 数据不足
+BUFFERING
+    ↓ 数据足够
+PLAYING
+
+App 层回调：
+
+onInfo(BUFFERING_START)
+onInfo(BUFFERING_END)
+onBufferingUpdate(percent)
+onError(NETWORK_ERROR, message)
+
+成功标准：
+
+1. 能播放 HTTP MP4
+2. 能播放 HTTPS MP4
+3. 网络慢时能进入缓冲状态
+4. 网络恢复后能继续播放
+5. 加载失败能回调错误
+6. 网络播放 release 不崩溃
+
+============================================================
+十三、第 11 阶段：封装成类似 ijkPlayer 的 SDK
+============================================================
+
+目标：
+把播放器封装成可复用库，方便 App 使用。
+
+建议模块结构：
+
+player-core/
+    C++ 播放器内核
+
+player-android/
+    Kotlin / Java 封装
+
+player-ui/
+    PlayerView、控制条、全屏、手势
+
+sample-app/
+    示例 App
+
+对外 API 示例：
+
+class XPlayer {
+    fun setDataSource(url: String)
+    fun setSurface(surface: Surface)
+    fun prepareAsync()
+    fun start()
+    fun pause()
+    fun stop()
+    fun seekTo(positionMs: Long)
+    fun release()
+
+    fun setOption(category: Int, name: String, value: Long)
+    fun setOption(category: Int, name: String, value: String)
+
+    fun getDuration(): Long
+    fun getCurrentPosition(): Long
+    fun isPlaying(): Boolean
+}
+
+PlayerView 示例：
+
+class XPlayerView(context: Context) : FrameLayout(context) {
+    fun setVideoPath(url: String)
+    fun start()
+    fun pause()
+    fun release()
+    fun enterFullScreen()
+    fun exitFullScreen()
+}
+
+要做的事情：
+
+1. 封装播放器 API
+2. 封装 SurfaceView / TextureView
+3. 封装播放控制条
+4. 封装手势：
+   - 单击显示/隐藏控制栏
+   - 双击暂停/播放
+   - 左右滑动 seek
+   - 上下滑动调节音量/亮度
+5. 封装全屏播放
+6. 封装错误回调
+7. 封装生命周期绑定
+8. 提供 demo app
+9. 提供 README 文档
+
+成功标准：
+
+1. 其他项目可以直接依赖播放器库
+2. 使用方式接近 ijkPlayer
+3. API 简单稳定
+4. demo 能播放本地和网络视频
+5. 退出页面不泄漏资源
+
+============================================================
+十四、第 12 阶段：兼容性、性能和稳定性优化
+============================================================
+
+目标：
+让播放器更接近生产可用。
+
+需要优化：
+
+1. 线程安全
+2. 队列内存控制
+3. seek 精准度
+4. 首帧耗时
+5. 首屏打开速度
+6. 网络超时
+7. 缓冲策略
+8. 硬解兼容性
+9. 软硬解切换
+10. 不同 Android 版本兼容
+11. 不同 CPU 架构兼容
+12. so 包体积
+13. FFmpeg 编译裁剪
+14. 错误码设计
+15. 日志系统
+16. 崩溃保护
+17. 内存泄漏检测
+18. 音画同步长期稳定性
+
+可加入的功能：
+
+1. 倍速播放
+2. 静音
+3. 截图
+4. 字幕
+5. 旋转角度
+6. 镜像
+7. 循环播放
+8. 后台音频播放
+9. 播放列表
+10. 预加载
+11. 边播边缓存
+
+============================================================
+十五、推荐版本路线
+============================================================
+
+v0.1：FFmpeg 工程跑通
+
+功能：
+1. Android JNI 调用 native
+2. FFmpeg 打开本地 MP4
+3. 打印音视频流信息
+
+v0.2：Demuxer 模块
+
+功能：
+1. 独立 Demuxer 类
+2. 能读取 AVPacket
+3. 能区分音频包和视频包
+4. 能放入 PacketQueue
+
+v0.3：只播放音频
+
+功能：
+1. 音频解码
+2. swr_convert 重采样
+3. AudioTrack 播放 PCM
+4. 能听到声音
+
+v0.4：只显示视频
+
+功能：
+1. 视频解码
+2. sws_scale 转 RGBA
+3. ANativeWindow 渲染
+4. 能看到画面
+
+v0.5：音视频一起播放
+
+功能：
+1. readThread
+2. audioDecodeThread
+3. videoDecodeThread
+4. audioClock
+5. 视频跟随音频同步
+
+v0.6：基础控制 API
+
+功能：
+1. setDataSource
+2. setSurface
+3. prepareAsync
+4. start
+5. pause
+6. resume
+7. stop
+8. release
+9. getDuration
+10. getCurrentPosition
+
+v0.7：Seek
+
+功能：
+1. 支持进度条拖动
+2. seek 后清空队列
+3. seek 后 flush 解码器
+4. seek 后音视频重新同步
+
+v0.8：OpenGL 渲染
+
+功能：
+1. EGL 环境
+2. YUV 三纹理
+3. Shader 转 RGB
+4. 支持画面比例控制
+
+v0.9：MediaCodec 硬解
+
+功能：
+1. H.264 硬解
+2. H.265 硬解
+3. 硬解失败回退软解
+4. 支持 Surface 输出
+
+v1.0：网络播放
+
+功能：
+1. HTTP MP4
+2. HTTPS MP4
+3. HLS / m3u8
+4. 缓冲状态
+5. 网络错误回调
+
+v1.1：SDK 封装
+
+功能：
+1. 独立播放器库
+2. PlayerView
+3. 控制条
+4. 全屏
+5. demo app
+6. README 文档
+
+============================================================
+十六、当前最应该先做什么
+============================================================
+
+现在不要急着写完整播放器。
+
+现在第一件事：
+
+只做 v0.1。
+
+也就是：
+
+1. 新建 Android Native C++ 项目
+2. 集成 FFmpeg
+3. CMake 链接 FFmpeg so
+4. Kotlin 调用 native
+5. Native 打开本地 MP4
+6. 打印音视频信息
+
+完成这个后，再进入 v0.2。
+
+当前最小目标：
+
+Android App 里面调用：
+
+testOpenFile("/sdcard/Download/test.mp4")
+
+然后输出：
+
+Open file success
+Video Codec: h264
+Audio Codec: aac
+Duration: xxx seconds
+
+这一步成功，说明整个播放器的地基已经搭好。
+
+============================================================
+十七、不要一开始就做的事情
+============================================================
+
+现在不要做：
+
+1. 不要直接复刻 ijkPlayer 全部源码结构
+2. 不要一开始就做 MediaCodec
+3. 不要一开始就做 OpenGL
+4. 不要一开始就做 HLS
+5. 不要一开始就做 RTMP
+6. 不要一开始就做缓存
+7. 不要一开始就做倍速
+8. 不要一开始就做字幕
+9. 不要一开始就做截图
+10. 不要一开始就做播放器 UI
+
+原因：
+
+这些功能都会增加复杂度。播放器最难的不是“功能多”，而是：
+
+1. 线程稳定
+2. 队列稳定
+3. 生命周期稳定
+4. 音视频同步稳定
+5. release 不崩溃
+6. seek 不死锁
+7. Surface 销毁不崩溃
+
+所以第一条主线一定是：
+
+FFmpeg 跑通
+    ↓
+音频跑通
+    ↓
+视频跑通
+    ↓
+同步跑通
+    ↓
+控制跑通
+    ↓
+seek 跑通
+    ↓
+硬解
+    ↓
+网络
+    ↓
+SDK
+
+============================================================
+十八、最终总结
+============================================================
+
+自研 ijkPlayer 类播放器的正确路线：
+
+第一步不是写完整播放器，而是先写一个最小播放器内核。
+
+核心路线：
+
+1. FFmpeg 打开文件
+2. Demuxer 读取音视频包
+3. AudioDecoder 解码音频
+4. AudioTrack 播放 PCM
+5. VideoDecoder 解码视频
+6. ANativeWindow 显示画面
+7. audioClock 控制视频同步
+8. 实现 start / pause / resume / stop / release
+9. 实现 seek
+10. 改用 OpenGL 优化渲染
+11. 接入 MediaCodec 硬解
+12. 支持网络播放和缓冲
+13. 封装成 SDK
+
+最重要的原则：
+
+先软解，后硬解。
+先本地，后网络。
+先播放，后控制。
+先稳定，后优化。
+先最小闭环，后 ijkPlayer 效果。
