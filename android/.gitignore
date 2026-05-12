@@ -1,0 +1,45 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local environment
+/local.properties
+local.properties
+
+# Gradle
+/.gradle/
+/build/
+**/build/
+
+# Android Studio / IntelliJ
+*.iml
+/.idea/caches/
+/.idea/libraries/
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+/.idea/shelf/
+/.idea/tasks.xml
+
+# Android Studio generated
+/captures/
+.navigation/
+
+# Native build output
+.externalNativeBuild
+.externalNativeBuild/
+.cxx
+.cxx/
+**/.cxx/
+**/.externalNativeBuild/
+
+# Signing / profiling / logs
+*.jks
+*.keystore
+*.hprof
+*.log
+
+# Build artifacts
+*.apk
+*.aab
