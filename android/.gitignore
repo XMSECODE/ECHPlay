@@ -43,3 +43,4 @@ local.properties
 # Build artifacts
 *.apk
 *.aab
+.idea/
