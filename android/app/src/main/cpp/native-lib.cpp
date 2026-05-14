@@ -61,6 +61,32 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativeSetDataSource(
 }
 
 extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_abcplaydemo_player_ECHPlayer_nativeSetSurface(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle,
+        jobject surface) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return;
+    }
+
+    if (surface == nullptr) {
+        player->setSurface(nullptr);
+        return;
+    }
+
+    ANativeWindow *window = ANativeWindow_fromSurface(env, surface);
+    player->setSurface(window);
+
+    if (window != nullptr) {
+        ANativeWindow_release(window);
+    }
+}
+
+extern "C"
 JNIEXPORT jstring JNICALL
 Java_com_example_abcplaydemo_player_ECHPlayer_nativePrepare(
         JNIEnv *env,
@@ -78,47 +104,31 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativePrepare(
 
 extern "C"
 JNIEXPORT jstring JNICALL
-Java_com_example_abcplaydemo_player_ECHPlayer_nativeDecodeFirstVideoFrame(
+Java_com_example_abcplaydemo_player_ECHPlayer_nativePlay(
         JNIEnv *env,
         jobject thiz,
         jlong nativeHandle) {
 
     NativePlayer *player = getPlayer(nativeHandle);
     if (player == nullptr) {
-        return env->NewStringUTF("decode failed: NativePlayer is null");
+        return env->NewStringUTF("play failed: NativePlayer is null");
     }
 
-    std::string result = player->decodeFirstVideoFrame();
+    std::string result = player->play();
     return env->NewStringUTF(result.c_str());
 }
 
 extern "C"
-JNIEXPORT jstring JNICALL
-Java_com_example_abcplaydemo_player_ECHPlayer_nativeRenderFirstVideoFrame(
+JNIEXPORT void JNICALL
+Java_com_example_abcplaydemo_player_ECHPlayer_nativeStop(
         JNIEnv *env,
         jobject thiz,
-        jlong nativeHandle,
-        jobject surface) {
+        jlong nativeHandle) {
 
     NativePlayer *player = getPlayer(nativeHandle);
-    if (player == nullptr) {
-        return env->NewStringUTF("render failed: NativePlayer is null");
+    if (player != nullptr) {
+        player->stop();
     }
-
-    if (surface == nullptr) {
-        return env->NewStringUTF("render failed: surface is null");
-    }
-
-    ANativeWindow *nativeWindow = ANativeWindow_fromSurface(env, surface);
-    if (nativeWindow == nullptr) {
-        return env->NewStringUTF("render failed: ANativeWindow_fromSurface failed");
-    }
-
-    std::string result = player->renderFirstVideoFrame(nativeWindow);
-
-    ANativeWindow_release(nativeWindow);
-
-    return env->NewStringUTF(result.c_str());
 }
 
 extern "C"

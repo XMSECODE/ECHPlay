@@ -4,7 +4,6 @@ import android.graphics.PixelFormat;
 import android.os.Bundle;
 import android.view.Surface;
 import android.view.SurfaceHolder;
-import android.widget.TextView;
 
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
@@ -60,31 +59,31 @@ public class MainActivity extends AppCompatActivity {
 
                 demoStarted = true;
 
-                binding.sampleText.setText(
-                        "Surface changed\n"
-                                + "width: " + width + "\n"
-                                + "height: " + height + "\n"
-                                + "准备渲染..."
-                );
-
                 binding.surfaceView.postDelayed(() -> {
-                    runRenderDemo(holder.getSurface());
+                    runPlayDemo(holder.getSurface(), width, height);
                 }, 500);
             }
 
             @Override
             public void surfaceDestroyed(@NonNull SurfaceHolder holder) {
+                if (player != null) {
+                    player.stop();
+                    player.setSurface(null);
+                }
             }
         });
     }
 
-    private void runRenderDemo(Surface surface) {
+    private void runPlayDemo(Surface surface, int surfaceWidth, int surfaceHeight) {
         player = new ECHPlayer();
 
-        TextView tv = binding.sampleText;
-
         StringBuilder text = new StringBuilder();
-        text.append("ECHPlayer render demo\n");
+        text.append("ECHPlayer video play demo\n");
+        text.append("Surface: ");
+        text.append(surfaceWidth);
+        text.append("x");
+        text.append(surfaceHeight);
+        text.append("\n");
         text.append("FFmpeg version: ");
         text.append(player.getFFmpegVersion());
         text.append("\n\n");
@@ -92,14 +91,15 @@ public class MainActivity extends AppCompatActivity {
         try {
             File videoFile = copyAssetToCache("test.mp4");
 
+            player.setSurface(surface);
             player.setDataSource(videoFile.getAbsolutePath());
 
             String prepareInfo = player.prepare();
             text.append(prepareInfo);
             text.append("\n\n");
 
-            String renderInfo = player.renderFirstVideoFrame(surface);
-            text.append(renderInfo);
+            String playInfo = player.play();
+            text.append(playInfo);
 
         } catch (IOException e) {
             text.append("没有找到测试视频。\n\n");
@@ -110,7 +110,7 @@ public class MainActivity extends AppCompatActivity {
             text.append(e.getMessage());
         }
 
-        tv.setText(text.toString());
+        binding.sampleText.setText(text.toString());
     }
 
     private File copyAssetToCache(String assetName) throws IOException {
@@ -136,6 +136,7 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         if (player != null) {
+            player.stop();
             player.release();
             player = null;
         }

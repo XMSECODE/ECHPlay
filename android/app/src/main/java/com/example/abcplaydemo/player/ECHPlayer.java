@@ -25,24 +25,25 @@ public class ECHPlayer implements AutoCloseable {
         nativeSetDataSource(nativeHandle, dataSource);
     }
 
+    public synchronized void setSurface(Surface surface) {
+        checkReleased();
+        nativeSetSurface(nativeHandle, surface);
+    }
+
     public synchronized String prepare() {
         checkReleased();
         return nativePrepare(nativeHandle);
     }
 
-    public synchronized String decodeFirstVideoFrame() {
+    public synchronized String play() {
         checkReleased();
-        return nativeDecodeFirstVideoFrame(nativeHandle);
+        return nativePlay(nativeHandle);
     }
 
-    public synchronized String renderFirstVideoFrame(Surface surface) {
-        checkReleased();
-
-        if (surface == null) {
-            throw new IllegalArgumentException("surface is null");
+    public synchronized void stop() {
+        if (!released && nativeHandle != 0) {
+            nativeStop(nativeHandle);
         }
-
-        return nativeRenderFirstVideoFrame(nativeHandle, surface);
     }
 
     public synchronized String getFFmpegVersion() {
@@ -75,11 +76,13 @@ public class ECHPlayer implements AutoCloseable {
 
     private native void nativeSetDataSource(long nativeHandle, String dataSource);
 
+    private native void nativeSetSurface(long nativeHandle, Surface surface);
+
     private native String nativePrepare(long nativeHandle);
 
-    private native String nativeDecodeFirstVideoFrame(long nativeHandle);
+    private native String nativePlay(long nativeHandle);
 
-    private native String nativeRenderFirstVideoFrame(long nativeHandle, Surface surface);
+    private native void nativeStop(long nativeHandle);
 
     private native String nativeGetFFmpegVersion(long nativeHandle);
 }
