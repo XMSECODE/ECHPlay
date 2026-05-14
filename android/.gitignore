@@ -44,3 +44,4 @@ local.properties
 *.apk
 *.aab
 .idea/
+ffmpeg_build/
