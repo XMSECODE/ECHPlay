@@ -360,6 +360,30 @@ bool NativePlayer::renderFrameToSurface(AVFrame *frame) {
         return false;
     }
 
+    int videoWidth = frame->width;
+    int videoHeight = frame->height;
+
+    if (videoWidth <= 0 || videoHeight <= 0) {
+        ANativeWindow_release(window);
+        return false;
+    }
+
+    // fitCenter：保持视频比例，完整显示在 Surface 中
+    float scaleX = static_cast<float>(surfaceWidth) / static_cast<float>(videoWidth);
+    float scaleY = static_cast<float>(surfaceHeight) / static_cast<float>(videoHeight);
+    float scale = std::min(scaleX, scaleY);
+
+    int renderWidth = static_cast<int>(videoWidth * scale);
+    int renderHeight = static_cast<int>(videoHeight * scale);
+
+    if (renderWidth <= 0 || renderHeight <= 0) {
+        ANativeWindow_release(window);
+        return false;
+    }
+
+    int offsetX = (surfaceWidth - renderWidth) / 2;
+    int offsetY = (surfaceHeight - renderHeight) / 2;
+
     int ret = ANativeWindow_setBuffersGeometry(
             window,
             surfaceWidth,
@@ -373,11 +397,11 @@ bool NativePlayer::renderFrameToSurface(AVFrame *frame) {
     }
 
     SwsContext *swsContext = sws_getContext(
-            frame->width,
-            frame->height,
+            videoWidth,
+            videoHeight,
             static_cast<AVPixelFormat>(frame->format),
-            surfaceWidth,
-            surfaceHeight,
+            renderWidth,
+            renderHeight,
             AV_PIX_FMT_RGBA,
             SWS_BILINEAR,
             nullptr,
@@ -394,8 +418,8 @@ bool NativePlayer::renderFrameToSurface(AVFrame *frame) {
 
     int rgbaBufferSize = av_image_get_buffer_size(
             AV_PIX_FMT_RGBA,
-            surfaceWidth,
-            surfaceHeight,
+            renderWidth,
+            renderHeight,
             1
     );
 
@@ -413,8 +437,8 @@ bool NativePlayer::renderFrameToSurface(AVFrame *frame) {
             rgbaFrame->linesize,
             rgbaBuffer.data(),
             AV_PIX_FMT_RGBA,
-            surfaceWidth,
-            surfaceHeight,
+            renderWidth,
+            renderHeight,
             1
     );
 
@@ -423,7 +447,7 @@ bool NativePlayer::renderFrameToSurface(AVFrame *frame) {
             frame->data,
             frame->linesize,
             0,
-            frame->height,
+            videoHeight,
             rgbaFrame->data,
             rgbaFrame->linesize
     );
@@ -444,15 +468,19 @@ bool NativePlayer::renderFrameToSurface(AVFrame *frame) {
     uint8_t *src = rgbaFrame->data[0];
     int srcStride = rgbaFrame->linesize[0];
 
-    int copyHeight = std::min(surfaceHeight, windowBuffer.height);
-    int copyWidthBytes = std::min(surfaceWidth, windowBuffer.width) * 4;
-
+    // 先把整个 Surface 清黑，作为黑边背景
     for (int y = 0; y < windowBuffer.height; ++y) {
         memset(dst + y * dstStride, 0, dstStride);
     }
 
+    // 居中绘制等比缩放后的 RGBA 图像
+    int copyHeight = std::min(renderHeight, windowBuffer.height - offsetY);
+    int copyWidthBytes = std::min(renderWidth, windowBuffer.width - offsetX) * 4;
+
     for (int y = 0; y < copyHeight; ++y) {
-        memcpy(dst + y * dstStride, src + y * srcStride, copyWidthBytes);
+        uint8_t *dstRow = dst + (offsetY + y) * dstStride + offsetX * 4;
+        uint8_t *srcRow = src + y * srcStride;
+        memcpy(dstRow, srcRow, copyWidthBytes);
     }
 
     ANativeWindow_unlockAndPost(window);
