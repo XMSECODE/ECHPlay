@@ -31,6 +31,27 @@ public class MainActivity extends AppCompatActivity {
 
         binding.sampleText.setText("等待 Surface 创建...");
 
+        binding.pauseButton.setOnClickListener(v -> {
+            if (player != null) {
+                player.pause();
+                appendLog("pause");
+            }
+        });
+
+        binding.resumeButton.setOnClickListener(v -> {
+            if (player != null) {
+                player.resume();
+                appendLog("resume");
+            }
+        });
+
+        binding.stopButton.setOnClickListener(v -> {
+            if (player != null) {
+                player.stop();
+                appendLog("stop");
+            }
+        });
+
         SurfaceHolder holder = binding.surfaceView.getHolder();
         holder.setFormat(PixelFormat.RGBA_8888);
 
@@ -111,6 +132,10 @@ public class MainActivity extends AppCompatActivity {
         }
 
         binding.sampleText.setText(text.toString());
+    }
+
+    private void appendLog(String message) {
+        binding.sampleText.append("\n" + message);
     }
 
     private File copyAssetToCache(String assetName) throws IOException {

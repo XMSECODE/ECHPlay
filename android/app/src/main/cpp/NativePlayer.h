@@ -24,6 +24,10 @@ public:
 
     std::string play();
 
+    void pause();
+
+    void resume();
+
     void stop();
 
     std::string getFFmpegVersion();
@@ -43,6 +47,7 @@ private:
 
     std::atomic<bool> playing;
     std::atomic<bool> stopRequested;
+    std::atomic<bool> paused;
     std::thread playThread;
 
 private:

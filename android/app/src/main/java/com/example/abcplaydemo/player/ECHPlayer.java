@@ -40,6 +40,18 @@ public class ECHPlayer implements AutoCloseable {
         return nativePlay(nativeHandle);
     }
 
+    public synchronized void pause() {
+        if (!released && nativeHandle != 0) {
+            nativePause(nativeHandle);
+        }
+    }
+
+    public synchronized void resume() {
+        if (!released && nativeHandle != 0) {
+            nativeResume(nativeHandle);
+        }
+    }
+
     public synchronized void stop() {
         if (!released && nativeHandle != 0) {
             nativeStop(nativeHandle);
@@ -81,6 +93,10 @@ public class ECHPlayer implements AutoCloseable {
     private native String nativePrepare(long nativeHandle);
 
     private native String nativePlay(long nativeHandle);
+
+    private native void nativePause(long nativeHandle);
+
+    private native void nativeResume(long nativeHandle);
 
     private native void nativeStop(long nativeHandle);
 

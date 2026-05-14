@@ -120,6 +120,32 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativePlay(
 
 extern "C"
 JNIEXPORT void JNICALL
+Java_com_example_abcplaydemo_player_ECHPlayer_nativePause(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player != nullptr) {
+        player->pause();
+    }
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_abcplaydemo_player_ECHPlayer_nativeResume(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player != nullptr) {
+        player->resume();
+    }
+}
+
+extern "C"
+JNIEXPORT void JNICALL
 Java_com_example_abcplaydemo_player_ECHPlayer_nativeStop(
         JNIEnv *env,
         jobject thiz,

@@ -32,7 +32,8 @@ NativePlayer::NativePlayer()
           prepared(false),
           released(false),
           playing(false),
-          stopRequested(false) {
+          stopRequested(false),
+          paused(false) {
     ECH_LOGI("NativePlayer create");
 }
 
@@ -201,6 +202,7 @@ std::string NativePlayer::play() {
     }
 
     stopRequested = false;
+    paused = false;
     playing = true;
 
     playThread = std::thread(&NativePlayer::decodeLoop, this);
@@ -208,6 +210,20 @@ std::string NativePlayer::play() {
     ECH_LOGI("play started");
 
     return "play started";
+}
+
+void NativePlayer::pause() {
+    if (playing.load() && !stopRequested.load()) {
+        paused = true;
+        ECH_LOGI("play paused");
+    }
+}
+
+void NativePlayer::resume() {
+    if (playing.load() && !stopRequested.load()) {
+        paused = false;
+        ECH_LOGI("play resumed");
+    }
 }
 
 void NativePlayer::stop() {
@@ -316,6 +332,14 @@ void NativePlayer::decodeLoop() {
             }
 
             decodedFrameCount++;
+
+            while (paused.load() && !stopRequested.load()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+
+            if (stopRequested.load()) {
+                break;
+            }
 
             renderFrameToSurface(frame);
 
