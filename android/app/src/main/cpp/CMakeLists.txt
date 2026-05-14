@@ -6,6 +6,7 @@ add_library(
         abcplaydemo
         SHARED
         native-lib.cpp
+        NativePlayer.cpp
 )
 
 set(FFMPEG_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/ffmpeg/include)

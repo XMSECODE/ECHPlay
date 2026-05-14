@@ -1,20 +1,17 @@
 package com.example.abcplaydemo;
 
-import androidx.appcompat.app.AppCompatActivity;
-
 import android.os.Bundle;
 import android.widget.TextView;
 
+import androidx.appcompat.app.AppCompatActivity;
+
 import com.example.abcplaydemo.databinding.ActivityMainBinding;
+import com.example.abcplaydemo.player.ECHPlayer;
 
 public class MainActivity extends AppCompatActivity {
 
-    // Used to load the 'abcplaydemo' library on application startup.
-    static {
-        System.loadLibrary("abcplaydemo");
-    }
-
     private ActivityMainBinding binding;
+    private ECHPlayer player;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -23,14 +20,22 @@ public class MainActivity extends AppCompatActivity {
         binding = ActivityMainBinding.inflate(getLayoutInflater());
         setContentView(binding.getRoot());
 
-        // Example of a call to a native method
+        player = new ECHPlayer();
+
         TextView tv = binding.sampleText;
-        tv.setText(stringFromJNI());
+        tv.setText(
+                "ECHPlayer init success\n"
+                        + "FFmpeg version: "
+                        + player.getFFmpegVersion()
+        );
     }
 
-    /**
-     * A native method that is implemented by the 'abcplaydemo' native library,
-     * which is packaged with this application.
-     */
-    public native String stringFromJNI();
+    @Override
+    protected void onDestroy() {
+        if (player != null) {
+            player.release();
+            player = null;
+        }
+        super.onDestroy();
+    }
 }
