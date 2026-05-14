@@ -1,5 +1,7 @@
 package com.example.abcplaydemo.player;
 
+import android.view.Surface;
+
 public class ECHPlayer implements AutoCloseable {
 
     static {
@@ -31,6 +33,16 @@ public class ECHPlayer implements AutoCloseable {
     public synchronized String decodeFirstVideoFrame() {
         checkReleased();
         return nativeDecodeFirstVideoFrame(nativeHandle);
+    }
+
+    public synchronized String renderFirstVideoFrame(Surface surface) {
+        checkReleased();
+
+        if (surface == null) {
+            throw new IllegalArgumentException("surface is null");
+        }
+
+        return nativeRenderFirstVideoFrame(nativeHandle, surface);
     }
 
     public synchronized String getFFmpegVersion() {
@@ -66,6 +78,8 @@ public class ECHPlayer implements AutoCloseable {
     private native String nativePrepare(long nativeHandle);
 
     private native String nativeDecodeFirstVideoFrame(long nativeHandle);
+
+    private native String nativeRenderFirstVideoFrame(long nativeHandle, Surface surface);
 
     private native String nativeGetFFmpegVersion(long nativeHandle);
 }

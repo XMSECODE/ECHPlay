@@ -1,6 +1,8 @@
 #include <jni.h>
 #include <string>
 
+#include <android/native_window_jni.h>
+
 #include "NativePlayer.h"
 
 static NativePlayer *getPlayer(jlong nativeHandle) {
@@ -87,6 +89,35 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativeDecodeFirstVideoFrame(
     }
 
     std::string result = player->decodeFirstVideoFrame();
+    return env->NewStringUTF(result.c_str());
+}
+
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_com_example_abcplaydemo_player_ECHPlayer_nativeRenderFirstVideoFrame(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle,
+        jobject surface) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return env->NewStringUTF("render failed: NativePlayer is null");
+    }
+
+    if (surface == nullptr) {
+        return env->NewStringUTF("render failed: surface is null");
+    }
+
+    ANativeWindow *nativeWindow = ANativeWindow_fromSurface(env, surface);
+    if (nativeWindow == nullptr) {
+        return env->NewStringUTF("render failed: ANativeWindow_fromSurface failed");
+    }
+
+    std::string result = player->renderFirstVideoFrame(nativeWindow);
+
+    ANativeWindow_release(nativeWindow);
+
     return env->NewStringUTF(result.c_str());
 }
 

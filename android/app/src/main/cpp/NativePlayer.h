@@ -4,6 +4,7 @@
 #include <string>
 
 struct AVFormatContext;
+struct ANativeWindow;
 
 class NativePlayer {
 public:
@@ -16,6 +17,8 @@ public:
     std::string prepare();
 
     std::string decodeFirstVideoFrame();
+
+    std::string renderFirstVideoFrame(ANativeWindow *nativeWindow);
 
     std::string getFFmpegVersion();
 
@@ -31,6 +34,8 @@ private:
 
 private:
     void releaseFormatContext();
+
+    std::string decodeFirstVideoFrameInternal(ANativeWindow *nativeWindow);
 
     std::string makeErrorString(int ret);
 };

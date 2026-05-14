@@ -1,21 +1,72 @@
 #include "NativePlayer.h"
 
 #include <android/log.h>
+#include <android/native_window_jni.h>
+#include <algorithm>
 #include <iomanip>
 #include <sstream>
+#include <vector>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
 #include <libavutil/error.h>
+#include <libavutil/imgutils.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/rational.h>
+#include <libswscale/swscale.h>
 }
 
 #define ECH_LOG_TAG "ECHPlayer"
 #define ECH_LOGI(...) __android_log_print(ANDROID_LOG_INFO, ECH_LOG_TAG, __VA_ARGS__)
 #define ECH_LOGE(...) __android_log_print(ANDROID_LOG_ERROR, ECH_LOG_TAG, __VA_ARGS__)
+
+static std::string renderRgbaFrameToWindow(
+        ANativeWindow *nativeWindow,
+        AVFrame *rgbaFrame,
+        int width,
+        int height) {
+
+    if (nativeWindow == nullptr) {
+        return "render failed: nativeWindow is null";
+    }
+
+    int ret = ANativeWindow_setBuffersGeometry(
+            nativeWindow,
+            width,
+            height,
+            WINDOW_FORMAT_RGBA_8888
+    );
+
+    if (ret < 0) {
+        return "render failed: ANativeWindow_setBuffersGeometry failed";
+    }
+
+    ANativeWindow_Buffer windowBuffer;
+    ret = ANativeWindow_lock(nativeWindow, &windowBuffer, nullptr);
+
+    if (ret < 0) {
+        return "render failed: ANativeWindow_lock failed";
+    }
+
+    uint8_t *dst = static_cast<uint8_t *>(windowBuffer.bits);
+    int dstStride = windowBuffer.stride * 4;
+
+    uint8_t *src = rgbaFrame->data[0];
+    int srcStride = rgbaFrame->linesize[0];
+
+    int copyHeight = std::min(height, windowBuffer.height);
+    int copyWidthBytes = std::min(width, windowBuffer.width) * 4;
+
+    for (int y = 0; y < copyHeight; ++y) {
+        memcpy(dst + y * dstStride, src + y * srcStride, copyWidthBytes);
+    }
+
+    ANativeWindow_unlockAndPost(nativeWindow);
+
+    return "render first video frame success";
+}
 
 NativePlayer::NativePlayer()
         : formatContext(nullptr),
@@ -155,6 +206,18 @@ std::string NativePlayer::prepare() {
 }
 
 std::string NativePlayer::decodeFirstVideoFrame() {
+    return decodeFirstVideoFrameInternal(nullptr);
+}
+
+std::string NativePlayer::renderFirstVideoFrame(ANativeWindow *nativeWindow) {
+    if (nativeWindow == nullptr) {
+        return "render failed: nativeWindow is null";
+    }
+
+    return decodeFirstVideoFrameInternal(nativeWindow);
+}
+
+std::string NativePlayer::decodeFirstVideoFrameInternal(ANativeWindow *nativeWindow) {
     if (!prepared || formatContext == nullptr) {
         return "decode failed: player is not prepared";
     }
@@ -163,7 +226,12 @@ std::string NativePlayer::decodeFirstVideoFrame() {
         return "decode failed: no video stream";
     }
 
-    ECH_LOGI("decodeFirstVideoFrame start");
+    bool needRender = nativeWindow != nullptr;
+
+    ECH_LOGI(
+            "%s start",
+            needRender ? "renderFirstVideoFrame" : "decodeFirstVideoFrame"
+    );
 
     AVStream *videoStream = formatContext->streams[videoStreamIndex];
     AVCodecParameters *codecParameters = videoStream->codecpar;
@@ -257,8 +325,77 @@ std::string NativePlayer::decodeFirstVideoFrame() {
             oss << "best effort timestamp: " << frame->best_effort_timestamp << "\n";
             oss << "packet count: " << packetCount << "\n";
 
+            if (needRender) {
+                SwsContext *swsContext = sws_getContext(
+                        frame->width,
+                        frame->height,
+                        static_cast<AVPixelFormat>(frame->format),
+                        frame->width,
+                        frame->height,
+                        AV_PIX_FMT_RGBA,
+                        SWS_BILINEAR,
+                        nullptr,
+                        nullptr,
+                        nullptr
+                );
+
+                if (swsContext == nullptr) {
+                    oss << "\nrender failed: sws_getContext failed";
+                } else {
+                    AVFrame *rgbaFrame = av_frame_alloc();
+
+                    int rgbaBufferSize = av_image_get_buffer_size(
+                            AV_PIX_FMT_RGBA,
+                            frame->width,
+                            frame->height,
+                            1
+                    );
+
+                    std::vector<uint8_t> rgbaBuffer(rgbaBufferSize);
+
+                    if (rgbaFrame == nullptr || rgbaBufferSize <= 0) {
+                        oss << "\nrender failed: alloc RGBA frame failed";
+                    } else {
+                        av_image_fill_arrays(
+                                rgbaFrame->data,
+                                rgbaFrame->linesize,
+                                rgbaBuffer.data(),
+                                AV_PIX_FMT_RGBA,
+                                frame->width,
+                                frame->height,
+                                1
+                        );
+
+                        sws_scale(
+                                swsContext,
+                                frame->data,
+                                frame->linesize,
+                                0,
+                                frame->height,
+                                rgbaFrame->data,
+                                rgbaFrame->linesize
+                        );
+
+                        std::string renderResult = renderRgbaFrameToWindow(
+                                nativeWindow,
+                                rgbaFrame,
+                                frame->width,
+                                frame->height
+                        );
+
+                        oss << "\n";
+                        oss << renderResult << "\n";
+                        oss << "render format: RGBA_8888\n";
+                    }
+
+                    av_frame_free(&rgbaFrame);
+                    sws_freeContext(swsContext);
+                }
+            }
+
             ECH_LOGI(
-                    "decode first video frame success, size=%dx%d, format=%s",
+                    "%s success, size=%dx%d, format=%s",
+                    needRender ? "render first video frame" : "decode first video frame",
                     frame->width,
                     frame->height,
                     pixelFormatName ? pixelFormatName : "unknown"
