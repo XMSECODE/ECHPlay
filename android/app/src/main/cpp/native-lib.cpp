@@ -15,7 +15,10 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativeInit(
         JNIEnv *env,
         jobject thiz) {
 
-    NativePlayer *player = new NativePlayer();
+    JavaVM *javaVm = nullptr;
+    env->GetJavaVM(&javaVm);
+
+    NativePlayer *player = new NativePlayer(javaVm, env, thiz);
     return reinterpret_cast<jlong>(player);
 }
 

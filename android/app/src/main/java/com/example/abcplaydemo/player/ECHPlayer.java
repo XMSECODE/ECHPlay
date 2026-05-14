@@ -1,5 +1,8 @@
 package com.example.abcplaydemo.player;
 
+import android.media.AudioFormat;
+import android.media.AudioManager;
+import android.media.AudioTrack;
 import android.view.Surface;
 
 public class ECHPlayer implements AutoCloseable {
@@ -10,6 +13,8 @@ public class ECHPlayer implements AutoCloseable {
 
     private long nativeHandle = 0;
     private boolean released = false;
+
+    private AudioTrack audioTrack;
 
     public ECHPlayer() {
         nativeHandle = nativeInit();
@@ -43,11 +48,19 @@ public class ECHPlayer implements AutoCloseable {
     public synchronized void pause() {
         if (!released && nativeHandle != 0) {
             nativePause(nativeHandle);
+
+            if (audioTrack != null) {
+                audioTrack.pause();
+            }
         }
     }
 
     public synchronized void resume() {
         if (!released && nativeHandle != 0) {
+            if (audioTrack != null) {
+                audioTrack.play();
+            }
+
             nativeResume(nativeHandle);
         }
     }
@@ -55,6 +68,7 @@ public class ECHPlayer implements AutoCloseable {
     public synchronized void stop() {
         if (!released && nativeHandle != 0) {
             nativeStop(nativeHandle);
+            releaseAudioTrack();
         }
     }
 
@@ -68,12 +82,66 @@ public class ECHPlayer implements AutoCloseable {
             nativeRelease(nativeHandle);
             nativeHandle = 0;
             released = true;
+
+            releaseAudioTrack();
         }
     }
 
     @Override
     public void close() {
         release();
+    }
+
+    private synchronized void onNativeAudioInfo(int sampleRate, int channels) {
+        releaseAudioTrack();
+
+        int channelConfig = channels == 1
+                ? AudioFormat.CHANNEL_OUT_MONO
+                : AudioFormat.CHANNEL_OUT_STEREO;
+
+        int minBufferSize = AudioTrack.getMinBufferSize(
+                sampleRate,
+                channelConfig,
+                AudioFormat.ENCODING_PCM_16BIT
+        );
+
+        int bufferSize = Math.max(minBufferSize, sampleRate * channels * 2);
+
+        audioTrack = new AudioTrack(
+                AudioManager.STREAM_MUSIC,
+                sampleRate,
+                channelConfig,
+                AudioFormat.ENCODING_PCM_16BIT,
+                bufferSize,
+                AudioTrack.MODE_STREAM
+        );
+
+        audioTrack.play();
+    }
+
+    private void onNativeAudioData(byte[] data, int size) {
+        AudioTrack track;
+
+        synchronized (this) {
+            track = audioTrack;
+        }
+
+        if (track != null && data != null && size > 0) {
+            track.write(data, 0, size);
+        }
+    }
+
+    private synchronized void releaseAudioTrack() {
+        if (audioTrack != null) {
+            try {
+                audioTrack.pause();
+                audioTrack.flush();
+            } catch (Exception ignored) {
+            }
+
+            audioTrack.release();
+            audioTrack = null;
+        }
     }
 
     private void checkReleased() {

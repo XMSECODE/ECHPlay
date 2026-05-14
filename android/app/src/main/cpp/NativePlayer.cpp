@@ -18,13 +18,14 @@ extern "C" {
 #include <libavutil/pixdesc.h>
 #include <libavutil/rational.h>
 #include <libswscale/swscale.h>
+#include <libswresample/swresample.h>
 }
 
 #define ECH_LOG_TAG "ECHPlayer"
 #define ECH_LOGI(...) __android_log_print(ANDROID_LOG_INFO, ECH_LOG_TAG, __VA_ARGS__)
 #define ECH_LOGE(...) __android_log_print(ANDROID_LOG_ERROR, ECH_LOG_TAG, __VA_ARGS__)
 
-NativePlayer::NativePlayer()
+NativePlayer::NativePlayer(JavaVM *vm, JNIEnv *env, jobject javaPlayer)
         : formatContext(nullptr),
           nativeWindow(nullptr),
           videoStreamIndex(-1),
@@ -33,7 +34,33 @@ NativePlayer::NativePlayer()
           released(false),
           playing(false),
           stopRequested(false),
-          paused(false) {
+          paused(false),
+          javaVm(vm),
+          javaPlayerObject(nullptr),
+          onNativeAudioInfoMethod(nullptr),
+          onNativeAudioDataMethod(nullptr) {
+
+    if (env != nullptr && javaPlayer != nullptr) {
+        javaPlayerObject = env->NewGlobalRef(javaPlayer);
+
+        jclass clazz = env->GetObjectClass(javaPlayer);
+        if (clazz != nullptr) {
+            onNativeAudioInfoMethod = env->GetMethodID(
+                    clazz,
+                    "onNativeAudioInfo",
+                    "(II)V"
+            );
+
+            onNativeAudioDataMethod = env->GetMethodID(
+                    clazz,
+                    "onNativeAudioData",
+                    "([BI)V"
+            );
+
+            env->DeleteLocalRef(clazz);
+        }
+    }
+
     ECH_LOGI("NativePlayer create");
 }
 
@@ -43,6 +70,7 @@ NativePlayer::~NativePlayer() {
     stop();
     releaseSurface();
     releaseFormatContext();
+    releaseJavaCallback();
 
     ECH_LOGI("NativePlayer destroy");
 }
@@ -207,6 +235,10 @@ std::string NativePlayer::play() {
 
     playThread = std::thread(&NativePlayer::decodeLoop, this);
 
+    if (audioStreamIndex >= 0) {
+        audioThread = std::thread(&NativePlayer::audioDecodeLoop, this);
+    }
+
     ECH_LOGI("play started");
 
     return "play started";
@@ -231,6 +263,10 @@ void NativePlayer::stop() {
 
     if (playThread.joinable()) {
         playThread.join();
+    }
+
+    if (audioThread.joinable()) {
+        audioThread.join();
     }
 
     playing = false;
@@ -514,6 +550,310 @@ bool NativePlayer::renderFrameToSurface(AVFrame *frame) {
     ANativeWindow_release(window);
 
     return true;
+}
+
+void NativePlayer::audioDecodeLoop() {
+    ECH_LOGI("audioDecodeLoop start");
+
+    AVFormatContext *audioFormatContext = nullptr;
+
+    int ret = avformat_open_input(&audioFormatContext, dataSource.c_str(), nullptr, nullptr);
+    if (ret < 0) {
+        ECH_LOGE("audio avformat_open_input failed: %s", makeErrorString(ret).c_str());
+        return;
+    }
+
+    ret = avformat_find_stream_info(audioFormatContext, nullptr);
+    if (ret < 0) {
+        ECH_LOGE("audio avformat_find_stream_info failed: %s", makeErrorString(ret).c_str());
+        avformat_close_input(&audioFormatContext);
+        return;
+    }
+
+    int audioIndex = av_find_best_stream(
+            audioFormatContext,
+            AVMEDIA_TYPE_AUDIO,
+            -1,
+            -1,
+            nullptr,
+            0
+    );
+
+    if (audioIndex < 0) {
+        ECH_LOGE("audio stream not found");
+        avformat_close_input(&audioFormatContext);
+        return;
+    }
+
+    AVStream *audioStream = audioFormatContext->streams[audioIndex];
+    AVCodecParameters *codecParameters = audioStream->codecpar;
+
+    const AVCodec *decoder = avcodec_find_decoder(codecParameters->codec_id);
+    if (decoder == nullptr) {
+        ECH_LOGE("audio decoder not found");
+        avformat_close_input(&audioFormatContext);
+        return;
+    }
+
+    AVCodecContext *codecContext = avcodec_alloc_context3(decoder);
+    if (codecContext == nullptr) {
+        ECH_LOGE("audio avcodec_alloc_context3 failed");
+        avformat_close_input(&audioFormatContext);
+        return;
+    }
+
+    ret = avcodec_parameters_to_context(codecContext, codecParameters);
+    if (ret < 0) {
+        ECH_LOGE("audio avcodec_parameters_to_context failed: %s", makeErrorString(ret).c_str());
+        avcodec_free_context(&codecContext);
+        avformat_close_input(&audioFormatContext);
+        return;
+    }
+
+    ret = avcodec_open2(codecContext, decoder, nullptr);
+    if (ret < 0) {
+        ECH_LOGE("audio avcodec_open2 failed: %s", makeErrorString(ret).c_str());
+        avcodec_free_context(&codecContext);
+        avformat_close_input(&audioFormatContext);
+        return;
+    }
+
+    int outSampleRate = codecContext->sample_rate > 0 ? codecContext->sample_rate : 44100;
+    int outChannels = 2;
+
+    AVChannelLayout outChannelLayout;
+    av_channel_layout_default(&outChannelLayout, outChannels);
+
+    if (codecContext->ch_layout.nb_channels <= 0) {
+        int inputChannels = 2;
+
+        if (codecParameters->ch_layout.nb_channels > 0) {
+            inputChannels = codecParameters->ch_layout.nb_channels;
+        }
+
+        av_channel_layout_default(&codecContext->ch_layout, inputChannels);
+    }
+
+    SwrContext *swrContext = nullptr;
+
+    ret = swr_alloc_set_opts2(
+            &swrContext,
+            &outChannelLayout,
+            AV_SAMPLE_FMT_S16,
+            outSampleRate,
+            &codecContext->ch_layout,
+            codecContext->sample_fmt,
+            codecContext->sample_rate,
+            0,
+            nullptr
+    );
+
+    if (ret < 0 || swrContext == nullptr) {
+        ECH_LOGE("swr_alloc_set_opts2 failed");
+        av_channel_layout_uninit(&outChannelLayout);
+        avcodec_free_context(&codecContext);
+        avformat_close_input(&audioFormatContext);
+        return;
+    }
+
+    ret = swr_init(swrContext);
+    if (ret < 0) {
+        ECH_LOGE("swr_init failed: %s", makeErrorString(ret).c_str());
+        swr_free(&swrContext);
+        av_channel_layout_uninit(&outChannelLayout);
+        avcodec_free_context(&codecContext);
+        avformat_close_input(&audioFormatContext);
+        return;
+    }
+
+    notifyAudioInfo(outSampleRate, outChannels);
+
+    AVPacket *packet = av_packet_alloc();
+    AVFrame *frame = av_frame_alloc();
+
+    if (packet == nullptr || frame == nullptr) {
+        av_packet_free(&packet);
+        av_frame_free(&frame);
+        swr_free(&swrContext);
+        av_channel_layout_uninit(&outChannelLayout);
+        avcodec_free_context(&codecContext);
+        avformat_close_input(&audioFormatContext);
+        return;
+    }
+
+    int decodedAudioFrameCount = 0;
+
+    while (!stopRequested.load() && av_read_frame(audioFormatContext, packet) >= 0) {
+        if (packet->stream_index != audioIndex) {
+            av_packet_unref(packet);
+            continue;
+        }
+
+        ret = avcodec_send_packet(codecContext, packet);
+        av_packet_unref(packet);
+
+        if (ret < 0) {
+            ECH_LOGE("audio avcodec_send_packet failed: %s", makeErrorString(ret).c_str());
+            continue;
+        }
+
+        while (!stopRequested.load()) {
+            ret = avcodec_receive_frame(codecContext, frame);
+
+            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+                break;
+            }
+
+            if (ret < 0) {
+                ECH_LOGE("audio avcodec_receive_frame failed: %s", makeErrorString(ret).c_str());
+                break;
+            }
+
+            while (paused.load() && !stopRequested.load()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+
+            int outSamples = static_cast<int>(
+                    av_rescale_rnd(
+                            swr_get_delay(swrContext, codecContext->sample_rate) + frame->nb_samples,
+                            outSampleRate,
+                            codecContext->sample_rate,
+                            AV_ROUND_UP
+                    )
+            );
+
+            int outBufferSize = av_samples_get_buffer_size(
+                    nullptr,
+                    outChannels,
+                    outSamples,
+                    AV_SAMPLE_FMT_S16,
+                    1
+            );
+
+            if (outBufferSize > 0) {
+                std::vector<uint8_t> outBuffer(outBufferSize);
+                uint8_t *outData[1] = {outBuffer.data()};
+
+                int convertedSamples = swr_convert(
+                        swrContext,
+                        outData,
+                        outSamples,
+                        const_cast<const uint8_t **>(frame->data),
+                        frame->nb_samples
+                );
+
+                if (convertedSamples > 0) {
+                    int dataSize = convertedSamples
+                                   * outChannels
+                                   * av_get_bytes_per_sample(AV_SAMPLE_FMT_S16);
+
+                    notifyAudioData(outBuffer.data(), dataSize);
+                    decodedAudioFrameCount++;
+                }
+            }
+
+            av_frame_unref(frame);
+        }
+    }
+
+    ECH_LOGI("audioDecodeLoop finished, decodedAudioFrameCount=%d", decodedAudioFrameCount);
+
+    av_packet_free(&packet);
+    av_frame_free(&frame);
+    swr_free(&swrContext);
+    av_channel_layout_uninit(&outChannelLayout);
+    avcodec_free_context(&codecContext);
+    avformat_close_input(&audioFormatContext);
+}
+
+JNIEnv *NativePlayer::getJNIEnv(bool *needDetach) {
+    if (needDetach != nullptr) {
+        *needDetach = false;
+    }
+
+    if (javaVm == nullptr) {
+        return nullptr;
+    }
+
+    JNIEnv *env = nullptr;
+    int status = javaVm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6);
+
+    if (status == JNI_OK) {
+        return env;
+    }
+
+    if (status == JNI_EDETACHED) {
+        if (javaVm->AttachCurrentThread(&env, nullptr) == JNI_OK) {
+            if (needDetach != nullptr) {
+                *needDetach = true;
+            }
+            return env;
+        }
+    }
+
+    return nullptr;
+}
+
+void NativePlayer::releaseJNIEnv(bool needDetach) {
+    if (needDetach && javaVm != nullptr) {
+        javaVm->DetachCurrentThread();
+    }
+}
+
+void NativePlayer::notifyAudioInfo(int sampleRate, int channels) {
+    bool needDetach = false;
+    JNIEnv *env = getJNIEnv(&needDetach);
+
+    if (env != nullptr && javaPlayerObject != nullptr && onNativeAudioInfoMethod != nullptr) {
+        env->CallVoidMethod(javaPlayerObject, onNativeAudioInfoMethod, sampleRate, channels);
+    }
+
+    releaseJNIEnv(needDetach);
+}
+
+void NativePlayer::notifyAudioData(uint8_t *data, int size) {
+    if (data == nullptr || size <= 0) {
+        return;
+    }
+
+    bool needDetach = false;
+    JNIEnv *env = getJNIEnv(&needDetach);
+
+    if (env != nullptr && javaPlayerObject != nullptr && onNativeAudioDataMethod != nullptr) {
+        jbyteArray byteArray = env->NewByteArray(size);
+        if (byteArray != nullptr) {
+            env->SetByteArrayRegion(
+                    byteArray,
+                    0,
+                    size,
+                    reinterpret_cast<jbyte *>(data)
+            );
+
+            env->CallVoidMethod(javaPlayerObject, onNativeAudioDataMethod, byteArray, size);
+            env->DeleteLocalRef(byteArray);
+        }
+    }
+
+    releaseJNIEnv(needDetach);
+}
+
+void NativePlayer::releaseJavaCallback() {
+    if (javaVm == nullptr || javaPlayerObject == nullptr) {
+        return;
+    }
+
+    bool needDetach = false;
+    JNIEnv *env = getJNIEnv(&needDetach);
+
+    if (env != nullptr) {
+        env->DeleteGlobalRef(javaPlayerObject);
+    }
+
+    javaPlayerObject = nullptr;
+    onNativeAudioInfoMethod = nullptr;
+    onNativeAudioDataMethod = nullptr;
+
+    releaseJNIEnv(needDetach);
 }
 
 std::string NativePlayer::getFFmpegVersion() {
