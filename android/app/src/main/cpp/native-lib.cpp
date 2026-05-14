@@ -31,6 +31,50 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativeRelease(
 }
 
 extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_abcplaydemo_player_ECHPlayer_nativeSetDataSource(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle,
+        jstring dataSource) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return;
+    }
+
+    if (dataSource == nullptr) {
+        player->setDataSource("");
+        return;
+    }
+
+    const char *sourceChars = env->GetStringUTFChars(dataSource, nullptr);
+    if (sourceChars == nullptr) {
+        return;
+    }
+
+    player->setDataSource(sourceChars);
+
+    env->ReleaseStringUTFChars(dataSource, sourceChars);
+}
+
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_com_example_abcplaydemo_player_ECHPlayer_nativePrepare(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return env->NewStringUTF("prepare failed: NativePlayer is null");
+    }
+
+    std::string result = player->prepare();
+    return env->NewStringUTF(result.c_str());
+}
+
+extern "C"
 JNIEXPORT jstring JNICALL
 Java_com_example_abcplaydemo_player_ECHPlayer_nativeGetFFmpegVersion(
         JNIEnv *env,

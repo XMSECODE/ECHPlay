@@ -13,6 +13,21 @@ public class ECHPlayer implements AutoCloseable {
         nativeHandle = nativeInit();
     }
 
+    public synchronized void setDataSource(String dataSource) {
+        checkReleased();
+
+        if (dataSource == null || dataSource.length() == 0) {
+            throw new IllegalArgumentException("dataSource is empty");
+        }
+
+        nativeSetDataSource(nativeHandle, dataSource);
+    }
+
+    public synchronized String prepare() {
+        checkReleased();
+        return nativePrepare(nativeHandle);
+    }
+
     public synchronized String getFFmpegVersion() {
         checkReleased();
         return nativeGetFFmpegVersion(nativeHandle);
@@ -40,6 +55,10 @@ public class ECHPlayer implements AutoCloseable {
     private native long nativeInit();
 
     private native void nativeRelease(long nativeHandle);
+
+    private native void nativeSetDataSource(long nativeHandle, String dataSource);
+
+    private native String nativePrepare(long nativeHandle);
 
     private native String nativeGetFFmpegVersion(long nativeHandle);
 }

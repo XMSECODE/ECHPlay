@@ -45,3 +45,7 @@ local.properties
 *.aab
 .idea/
 ffmpeg_build/
+app/src/main/assets/*.mp4
+app/src/main/assets/*.mov
+app/src/main/assets/*.mkv
+app/src/main/assets/*.flv
