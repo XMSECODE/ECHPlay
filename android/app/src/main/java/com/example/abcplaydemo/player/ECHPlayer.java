@@ -28,6 +28,11 @@ public class ECHPlayer implements AutoCloseable {
         return nativePrepare(nativeHandle);
     }
 
+    public synchronized String decodeFirstVideoFrame() {
+        checkReleased();
+        return nativeDecodeFirstVideoFrame(nativeHandle);
+    }
+
     public synchronized String getFFmpegVersion() {
         checkReleased();
         return nativeGetFFmpegVersion(nativeHandle);
@@ -59,6 +64,8 @@ public class ECHPlayer implements AutoCloseable {
     private native void nativeSetDataSource(long nativeHandle, String dataSource);
 
     private native String nativePrepare(long nativeHandle);
+
+    private native String nativeDecodeFirstVideoFrame(long nativeHandle);
 
     private native String nativeGetFFmpegVersion(long nativeHandle);
 }

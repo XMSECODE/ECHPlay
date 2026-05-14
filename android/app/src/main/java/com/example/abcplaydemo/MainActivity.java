@@ -30,7 +30,7 @@ public class MainActivity extends AppCompatActivity {
         TextView tv = binding.sampleText;
 
         StringBuilder text = new StringBuilder();
-        text.append("ECHPlayer prepare demo\n");
+        text.append("ECHPlayer decode demo\n");
         text.append("FFmpeg version: ");
         text.append(player.getFFmpegVersion());
         text.append("\n\n");
@@ -41,8 +41,12 @@ public class MainActivity extends AppCompatActivity {
             player.setDataSource(videoFile.getAbsolutePath());
 
             String prepareInfo = player.prepare();
-
             text.append(prepareInfo);
+            text.append("\n\n");
+
+            String decodeInfo = player.decodeFirstVideoFrame();
+            text.append(decodeInfo);
+
         } catch (IOException e) {
             text.append("没有找到测试视频。\n\n");
             text.append("请放一个 mp4 文件到：\n");

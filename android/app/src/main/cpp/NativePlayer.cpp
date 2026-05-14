@@ -9,6 +9,7 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
 #include <libavutil/error.h>
+#include <libavutil/pixdesc.h>
 #include <libavutil/rational.h>
 }
 
@@ -149,6 +150,135 @@ std::string NativePlayer::prepare() {
     }
 
     ECH_LOGI("prepare success");
+
+    return oss.str();
+}
+
+std::string NativePlayer::decodeFirstVideoFrame() {
+    if (!prepared || formatContext == nullptr) {
+        return "decode failed: player is not prepared";
+    }
+
+    if (videoStreamIndex < 0) {
+        return "decode failed: no video stream";
+    }
+
+    ECH_LOGI("decodeFirstVideoFrame start");
+
+    AVStream *videoStream = formatContext->streams[videoStreamIndex];
+    AVCodecParameters *codecParameters = videoStream->codecpar;
+
+    const AVCodec *decoder = avcodec_find_decoder(codecParameters->codec_id);
+    if (decoder == nullptr) {
+        return "decode failed: decoder not found";
+    }
+
+    AVCodecContext *codecContext = avcodec_alloc_context3(decoder);
+    if (codecContext == nullptr) {
+        return "decode failed: avcodec_alloc_context3 failed";
+    }
+
+    int ret = avcodec_parameters_to_context(codecContext, codecParameters);
+    if (ret < 0) {
+        std::string error = makeErrorString(ret);
+        avcodec_free_context(&codecContext);
+        return "decode failed\nstep: avcodec_parameters_to_context\nerror: " + error;
+    }
+
+    ret = avcodec_open2(codecContext, decoder, nullptr);
+    if (ret < 0) {
+        std::string error = makeErrorString(ret);
+        avcodec_free_context(&codecContext);
+        return "decode failed\nstep: avcodec_open2\nerror: " + error;
+    }
+
+    av_seek_frame(formatContext, videoStreamIndex, 0, AVSEEK_FLAG_BACKWARD);
+    avcodec_flush_buffers(codecContext);
+
+    AVPacket *packet = av_packet_alloc();
+    AVFrame *frame = av_frame_alloc();
+
+    if (packet == nullptr || frame == nullptr) {
+        av_packet_free(&packet);
+        av_frame_free(&frame);
+        avcodec_free_context(&codecContext);
+        return "decode failed: alloc packet/frame failed";
+    }
+
+    int packetCount = 0;
+    bool gotFrame = false;
+    std::ostringstream oss;
+
+    while ((ret = av_read_frame(formatContext, packet)) >= 0) {
+        if (packet->stream_index != videoStreamIndex) {
+            av_packet_unref(packet);
+            continue;
+        }
+
+        packetCount++;
+
+        ret = avcodec_send_packet(codecContext, packet);
+        av_packet_unref(packet);
+
+        if (ret < 0) {
+            std::string error = makeErrorString(ret);
+            oss << "decode failed\n";
+            oss << "step: avcodec_send_packet\n";
+            oss << "error: " << error;
+            break;
+        }
+
+        while (ret >= 0) {
+            ret = avcodec_receive_frame(codecContext, frame);
+
+            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+                break;
+            }
+
+            if (ret < 0) {
+                std::string error = makeErrorString(ret);
+                oss << "decode failed\n";
+                oss << "step: avcodec_receive_frame\n";
+                oss << "error: " << error;
+                break;
+            }
+
+            gotFrame = true;
+
+            const char *pixelFormatName = av_get_pix_fmt_name(
+                    static_cast<AVPixelFormat>(frame->format)
+            );
+
+            oss << "decode first video frame success\n";
+            oss << "codec: " << avcodec_get_name(codecParameters->codec_id) << "\n";
+            oss << "frame size: " << frame->width << "x" << frame->height << "\n";
+            oss << "pixel format: " << (pixelFormatName ? pixelFormatName : "unknown") << "\n";
+            oss << "pts: " << frame->pts << "\n";
+            oss << "best effort timestamp: " << frame->best_effort_timestamp << "\n";
+            oss << "packet count: " << packetCount << "\n";
+
+            ECH_LOGI(
+                    "decode first video frame success, size=%dx%d, format=%s",
+                    frame->width,
+                    frame->height,
+                    pixelFormatName ? pixelFormatName : "unknown"
+            );
+
+            break;
+        }
+
+        if (gotFrame) {
+            break;
+        }
+    }
+
+    if (!gotFrame && oss.str().empty()) {
+        oss << "decode failed: no video frame decoded";
+    }
+
+    av_packet_free(&packet);
+    av_frame_free(&frame);
+    avcodec_free_context(&codecContext);
 
     return oss.str();
 }

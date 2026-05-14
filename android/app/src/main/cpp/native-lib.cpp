@@ -76,6 +76,22 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativePrepare(
 
 extern "C"
 JNIEXPORT jstring JNICALL
+Java_com_example_abcplaydemo_player_ECHPlayer_nativeDecodeFirstVideoFrame(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return env->NewStringUTF("decode failed: NativePlayer is null");
+    }
+
+    std::string result = player->decodeFirstVideoFrame();
+    return env->NewStringUTF(result.c_str());
+}
+
+extern "C"
+JNIEXPORT jstring JNICALL
 Java_com_example_abcplaydemo_player_ECHPlayer_nativeGetFFmpegVersion(
         JNIEnv *env,
         jobject thiz,

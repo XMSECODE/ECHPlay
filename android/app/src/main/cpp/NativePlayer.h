@@ -15,6 +15,8 @@ public:
 
     std::string prepare();
 
+    std::string decodeFirstVideoFrame();
+
     std::string getFFmpegVersion();
 
 private:
