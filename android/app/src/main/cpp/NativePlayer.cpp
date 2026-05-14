@@ -3,6 +3,7 @@
 #include <android/log.h>
 #include <android/native_window_jni.h>
 #include <algorithm>
+#include <cstring>
 #include <iomanip>
 #include <sstream>
 #include <vector>
@@ -25,17 +26,35 @@ extern "C" {
 static std::string renderRgbaFrameToWindow(
         ANativeWindow *nativeWindow,
         AVFrame *rgbaFrame,
-        int width,
-        int height) {
+        int rgbaWidth,
+        int rgbaHeight) {
 
     if (nativeWindow == nullptr) {
         return "render failed: nativeWindow is null";
     }
 
+    if (rgbaFrame == nullptr || rgbaFrame->data[0] == nullptr) {
+        return "render failed: rgbaFrame is null";
+    }
+
+    int surfaceWidth = ANativeWindow_getWidth(nativeWindow);
+    int surfaceHeight = ANativeWindow_getHeight(nativeWindow);
+
+    if (surfaceWidth <= 0 || surfaceHeight <= 0) {
+        surfaceWidth = rgbaWidth;
+        surfaceHeight = rgbaHeight;
+    }
+
+    ECH_LOGI(
+            "ANativeWindow size before setBuffersGeometry: %dx%d",
+            surfaceWidth,
+            surfaceHeight
+    );
+
     int ret = ANativeWindow_setBuffersGeometry(
             nativeWindow,
-            width,
-            height,
+            surfaceWidth,
+            surfaceHeight,
             WINDOW_FORMAT_RGBA_8888
     );
 
@@ -50,22 +69,43 @@ static std::string renderRgbaFrameToWindow(
         return "render failed: ANativeWindow_lock failed";
     }
 
+    ECH_LOGI(
+            "ANativeWindow buffer: width=%d height=%d stride=%d format=%d",
+            windowBuffer.width,
+            windowBuffer.height,
+            windowBuffer.stride,
+            windowBuffer.format
+    );
+
     uint8_t *dst = static_cast<uint8_t *>(windowBuffer.bits);
     int dstStride = windowBuffer.stride * 4;
 
     uint8_t *src = rgbaFrame->data[0];
     int srcStride = rgbaFrame->linesize[0];
 
-    int copyHeight = std::min(height, windowBuffer.height);
-    int copyWidthBytes = std::min(width, windowBuffer.width) * 4;
+    int copyHeight = std::min(rgbaHeight, windowBuffer.height);
+    int copyWidthBytes = std::min(rgbaWidth, windowBuffer.width) * 4;
 
+    // 先清空整个 Surface，避免边缘残留
+    for (int y = 0; y < windowBuffer.height; ++y) {
+        memset(dst + y * dstStride, 0, dstStride);
+    }
+
+    // 把 RGBA 视频帧写入 Surface
     for (int y = 0; y < copyHeight; ++y) {
         memcpy(dst + y * dstStride, src + y * srcStride, copyWidthBytes);
     }
 
     ANativeWindow_unlockAndPost(nativeWindow);
 
-    return "render first video frame success";
+    std::ostringstream oss;
+    oss << "render first video frame success\n";
+    oss << "surface size: " << surfaceWidth << "x" << surfaceHeight << "\n";
+    oss << "buffer size: " << windowBuffer.width << "x" << windowBuffer.height << "\n";
+    oss << "buffer stride: " << windowBuffer.stride << "\n";
+    oss << "render format: RGBA_8888\n";
+
+    return oss.str();
 }
 
 NativePlayer::NativePlayer()
@@ -274,6 +314,8 @@ std::string NativePlayer::decodeFirstVideoFrameInternal(ANativeWindow *nativeWin
     }
 
     int packetCount = 0;
+    int decodedFrameCount = 0;
+    int targetFrameIndex = needRender ? 30 : 1;
     bool gotFrame = false;
     std::ostringstream oss;
 
@@ -311,6 +353,13 @@ std::string NativePlayer::decodeFirstVideoFrameInternal(ANativeWindow *nativeWin
                 break;
             }
 
+            decodedFrameCount++;
+
+            if (decodedFrameCount < targetFrameIndex) {
+                av_frame_unref(frame);
+                continue;
+            }
+
             gotFrame = true;
 
             const char *pixelFormatName = av_get_pix_fmt_name(
@@ -324,14 +373,29 @@ std::string NativePlayer::decodeFirstVideoFrameInternal(ANativeWindow *nativeWin
             oss << "pts: " << frame->pts << "\n";
             oss << "best effort timestamp: " << frame->best_effort_timestamp << "\n";
             oss << "packet count: " << packetCount << "\n";
+            oss << "decoded frame count: " << decodedFrameCount << "\n";
 
             if (needRender) {
+                int surfaceWidth = ANativeWindow_getWidth(nativeWindow);
+                int surfaceHeight = ANativeWindow_getHeight(nativeWindow);
+
+                if (surfaceWidth <= 0 || surfaceHeight <= 0) {
+                    surfaceWidth = frame->width;
+                    surfaceHeight = frame->height;
+                }
+
+                ECH_LOGI(
+                        "render target surface size: %dx%d",
+                        surfaceWidth,
+                        surfaceHeight
+                );
+
                 SwsContext *swsContext = sws_getContext(
                         frame->width,
                         frame->height,
                         static_cast<AVPixelFormat>(frame->format),
-                        frame->width,
-                        frame->height,
+                        surfaceWidth,
+                        surfaceHeight,
                         AV_PIX_FMT_RGBA,
                         SWS_BILINEAR,
                         nullptr,
@@ -346,23 +410,23 @@ std::string NativePlayer::decodeFirstVideoFrameInternal(ANativeWindow *nativeWin
 
                     int rgbaBufferSize = av_image_get_buffer_size(
                             AV_PIX_FMT_RGBA,
-                            frame->width,
-                            frame->height,
+                            surfaceWidth,
+                            surfaceHeight,
                             1
                     );
-
-                    std::vector<uint8_t> rgbaBuffer(rgbaBufferSize);
 
                     if (rgbaFrame == nullptr || rgbaBufferSize <= 0) {
                         oss << "\nrender failed: alloc RGBA frame failed";
                     } else {
+                        std::vector<uint8_t> rgbaBuffer(rgbaBufferSize);
+
                         av_image_fill_arrays(
                                 rgbaFrame->data,
                                 rgbaFrame->linesize,
                                 rgbaBuffer.data(),
                                 AV_PIX_FMT_RGBA,
-                                frame->width,
-                                frame->height,
+                                surfaceWidth,
+                                surfaceHeight,
                                 1
                         );
 
@@ -379,13 +443,12 @@ std::string NativePlayer::decodeFirstVideoFrameInternal(ANativeWindow *nativeWin
                         std::string renderResult = renderRgbaFrameToWindow(
                                 nativeWindow,
                                 rgbaFrame,
-                                frame->width,
-                                frame->height
+                                surfaceWidth,
+                                surfaceHeight
                         );
 
                         oss << "\n";
-                        oss << renderResult << "\n";
-                        oss << "render format: RGBA_8888\n";
+                        oss << renderResult;
                     }
 
                     av_frame_free(&rgbaFrame);

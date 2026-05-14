@@ -1,5 +1,6 @@
 package com.example.abcplaydemo;
 
+import android.graphics.PixelFormat;
 import android.os.Bundle;
 import android.view.Surface;
 import android.view.SurfaceHolder;
@@ -31,13 +32,13 @@ public class MainActivity extends AppCompatActivity {
 
         binding.sampleText.setText("等待 Surface 创建...");
 
-        binding.surfaceView.getHolder().addCallback(new SurfaceHolder.Callback() {
+        SurfaceHolder holder = binding.surfaceView.getHolder();
+        holder.setFormat(PixelFormat.RGBA_8888);
+
+        holder.addCallback(new SurfaceHolder.Callback() {
             @Override
             public void surfaceCreated(@NonNull SurfaceHolder holder) {
-                if (!demoStarted) {
-                    demoStarted = true;
-                    runRenderDemo(holder.getSurface());
-                }
+                binding.sampleText.setText("Surface created，等待 surfaceChanged...");
             }
 
             @Override
@@ -46,6 +47,29 @@ public class MainActivity extends AppCompatActivity {
                     int format,
                     int width,
                     int height) {
+
+                if (demoStarted) {
+                    return;
+                }
+
+                Surface surface = holder.getSurface();
+                if (surface == null || !surface.isValid()) {
+                    binding.sampleText.setText("Surface 无效");
+                    return;
+                }
+
+                demoStarted = true;
+
+                binding.sampleText.setText(
+                        "Surface changed\n"
+                                + "width: " + width + "\n"
+                                + "height: " + height + "\n"
+                                + "准备渲染..."
+                );
+
+                binding.surfaceView.postDelayed(() -> {
+                    runRenderDemo(holder.getSurface());
+                }, 500);
             }
 
             @Override
