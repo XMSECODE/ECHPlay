@@ -52,6 +52,15 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
+        binding.surfaceView.setOnLongClickListener(v -> {
+            if (player != null) {
+                String seekInfo = player.seekToMs(5000);
+                appendLog(seekInfo);
+                return true;
+            }
+            return false;
+        });
+
         SurfaceHolder holder = binding.surfaceView.getHolder();
         holder.setFormat(PixelFormat.RGBA_8888);
 

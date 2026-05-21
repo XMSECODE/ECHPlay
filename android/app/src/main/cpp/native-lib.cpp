@@ -162,6 +162,23 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativeStop(
 
 extern "C"
 JNIEXPORT jstring JNICALL
+Java_com_example_abcplaydemo_player_ECHPlayer_nativeSeekToMs(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle,
+        jlong positionMs) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return env->NewStringUTF("seek failed: NativePlayer is null");
+    }
+
+    std::string result = player->seekToMs(static_cast<int64_t>(positionMs));
+    return env->NewStringUTF(result.c_str());
+}
+
+extern "C"
+JNIEXPORT jstring JNICALL
 Java_com_example_abcplaydemo_player_ECHPlayer_nativeGetFFmpegVersion(
         JNIEnv *env,
         jobject thiz,

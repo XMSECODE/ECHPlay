@@ -36,6 +36,8 @@ public:
 
     void stop();
 
+    std::string seekToMs(int64_t positionMs);
+
     std::string getFFmpegVersion();
 
 private:

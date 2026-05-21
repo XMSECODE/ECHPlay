@@ -316,6 +316,99 @@ void NativePlayer::stop() {
     ECH_LOGI("play stopped");
 }
 
+std::string NativePlayer::seekToMs(int64_t positionMs) {
+    if (!prepared || formatContext == nullptr) {
+        return "seek failed: player is not prepared";
+    }
+
+    if (positionMs < 0) {
+        positionMs = 0;
+    }
+
+    bool wasPlaying = playing.load();
+    bool wasPaused = paused.load();
+
+    auto startPlaybackThreads = [&](bool startPaused) {
+        stopRequested = false;
+        paused = startPaused;
+        demuxFinished = false;
+        playing = true;
+        activePlaybackWorkers = audioStreamIndex >= 0 ? 2 : 1;
+        audioClockUs = audioStreamIndex >= 0 ? 0 : std::numeric_limits<int64_t>::min();
+
+        demuxThread = std::thread(&NativePlayer::demuxLoop, this);
+        playThread = std::thread(&NativePlayer::decodeLoop, this);
+        if (audioStreamIndex >= 0) {
+            audioThread = std::thread(&NativePlayer::audioDecodeLoop, this);
+        }
+    };
+
+    if (wasPlaying) {
+        stopRequested = true;
+        packetQueueCond.notify_all();
+
+        if (demuxThread.joinable()) {
+            demuxThread.join();
+        }
+        if (playThread.joinable()) {
+            playThread.join();
+        }
+        if (audioThread.joinable()) {
+            audioThread.join();
+        }
+
+        clearPacketQueues();
+        demuxFinished = false;
+        activePlaybackWorkers = 0;
+        playing = false;
+    }
+
+    int64_t seekTargetUs = positionMs * 1000;
+
+    int ret = avformat_seek_file(
+            formatContext,
+            -1,
+            std::numeric_limits<int64_t>::min(),
+            seekTargetUs,
+            std::numeric_limits<int64_t>::max(),
+            AVSEEK_FLAG_BACKWARD
+    );
+
+    if (ret < 0) {
+        ret = av_seek_frame(
+                formatContext,
+                -1,
+                seekTargetUs,
+                AVSEEK_FLAG_BACKWARD
+        );
+    }
+
+    if (ret < 0) {
+        std::string error = makeErrorString(ret);
+
+        if (wasPlaying) {
+            startPlaybackThreads(wasPaused);
+        }
+
+        return "seek failed\n"
+               "positionMs: " + std::to_string(positionMs) + "\n"
+               "error: " + error;
+    }
+
+    avformat_flush(formatContext);
+    clearPacketQueues();
+
+    audioClockUs = audioStreamIndex >= 0 ? 0 : std::numeric_limits<int64_t>::min();
+    demuxFinished = false;
+    stopRequested = false;
+
+    if (wasPlaying) {
+        startPlaybackThreads(wasPaused);
+    }
+
+    return "seek success\npositionMs: " + std::to_string(positionMs);
+}
+
 void NativePlayer::demuxLoop() {
     ECH_LOGI("demuxLoop start");
 
