@@ -45,6 +45,13 @@ NativePlayer::NativePlayer(JavaVM *vm, JNIEnv *env, jobject javaPlayer)
           demuxFinished(false),
           activePlaybackWorkers(0),
           audioClockUs(std::numeric_limits<int64_t>::min()),
+          swsContextCache(nullptr),
+          rgbaFrameCache(nullptr),
+          renderSrcWidth(0),
+          renderSrcHeight(0),
+          renderSrcFormat(-1),
+          renderDstWidth(0),
+          renderDstHeight(0),
           javaVm(vm),
           javaPlayerObject(nullptr),
           onNativeAudioInfoMethod(nullptr),
@@ -78,6 +85,7 @@ NativePlayer::~NativePlayer() {
     released = true;
 
     stop();
+    clearRenderCache();
     releaseSurface();
     releaseFormatContext();
     releaseJavaCallback();
@@ -299,6 +307,7 @@ void NativePlayer::stop() {
     }
 
     clearPacketQueues();
+    clearRenderCache();
     playing = false;
     demuxFinished = false;
     activePlaybackWorkers = 0;
@@ -608,68 +617,25 @@ bool NativePlayer::renderFrameToSurface(AVFrame *frame) {
         return false;
     }
 
-    SwsContext *swsContext = sws_getContext(
-            videoWidth,
-            videoHeight,
-            static_cast<AVPixelFormat>(frame->format),
-            renderWidth,
-            renderHeight,
-            AV_PIX_FMT_RGBA,
-            SWS_BILINEAR,
-            nullptr,
-            nullptr,
-            nullptr
-    );
-
-    if (swsContext == nullptr) {
+    if (!ensureRenderCache(videoWidth, videoHeight, frame->format, renderWidth, renderHeight)) {
         ANativeWindow_release(window);
         return false;
     }
-
-    AVFrame *rgbaFrame = av_frame_alloc();
-
-    int rgbaBufferSize = av_image_get_buffer_size(
-            AV_PIX_FMT_RGBA,
-            renderWidth,
-            renderHeight,
-            1
-    );
-
-    if (rgbaFrame == nullptr || rgbaBufferSize <= 0) {
-        av_frame_free(&rgbaFrame);
-        sws_freeContext(swsContext);
-        ANativeWindow_release(window);
-        return false;
-    }
-
-    std::vector<uint8_t> rgbaBuffer(rgbaBufferSize);
-
-    av_image_fill_arrays(
-            rgbaFrame->data,
-            rgbaFrame->linesize,
-            rgbaBuffer.data(),
-            AV_PIX_FMT_RGBA,
-            renderWidth,
-            renderHeight,
-            1
-    );
 
     sws_scale(
-            swsContext,
+            swsContextCache,
             frame->data,
             frame->linesize,
             0,
             videoHeight,
-            rgbaFrame->data,
-            rgbaFrame->linesize
+            rgbaFrameCache->data,
+            rgbaFrameCache->linesize
     );
 
     ANativeWindow_Buffer windowBuffer;
     ret = ANativeWindow_lock(window, &windowBuffer, nullptr);
 
     if (ret < 0) {
-        av_frame_free(&rgbaFrame);
-        sws_freeContext(swsContext);
         ANativeWindow_release(window);
         return false;
     }
@@ -677,8 +643,8 @@ bool NativePlayer::renderFrameToSurface(AVFrame *frame) {
     uint8_t *dst = static_cast<uint8_t *>(windowBuffer.bits);
     int dstStride = windowBuffer.stride * 4;
 
-    uint8_t *src = rgbaFrame->data[0];
-    int srcStride = rgbaFrame->linesize[0];
+    uint8_t *src = rgbaFrameCache->data[0];
+    int srcStride = rgbaFrameCache->linesize[0];
 
     // 先把整个 Surface 清黑，作为黑边背景
     for (int y = 0; y < windowBuffer.height; ++y) {
@@ -697,11 +663,114 @@ bool NativePlayer::renderFrameToSurface(AVFrame *frame) {
 
     ANativeWindow_unlockAndPost(window);
 
-    av_frame_free(&rgbaFrame);
-    sws_freeContext(swsContext);
     ANativeWindow_release(window);
 
     return true;
+}
+
+bool NativePlayer::ensureRenderCache(
+        int srcWidth,
+        int srcHeight,
+        int srcFormat,
+        int dstWidth,
+        int dstHeight) {
+
+    if (srcWidth <= 0 || srcHeight <= 0 || dstWidth <= 0 || dstHeight <= 0) {
+        return false;
+    }
+
+    bool cacheMatches = swsContextCache != nullptr
+                        && rgbaFrameCache != nullptr
+                        && renderSrcWidth == srcWidth
+                        && renderSrcHeight == srcHeight
+                        && renderSrcFormat == srcFormat
+                        && renderDstWidth == dstWidth
+                        && renderDstHeight == dstHeight;
+
+    if (cacheMatches) {
+        return true;
+    }
+
+    clearRenderCache();
+
+    swsContextCache = sws_getContext(
+            srcWidth,
+            srcHeight,
+            static_cast<AVPixelFormat>(srcFormat),
+            dstWidth,
+            dstHeight,
+            AV_PIX_FMT_RGBA,
+            SWS_BILINEAR,
+            nullptr,
+            nullptr,
+            nullptr
+    );
+
+    if (swsContextCache == nullptr) {
+        return false;
+    }
+
+    int rgbaBufferSize = av_image_get_buffer_size(
+            AV_PIX_FMT_RGBA,
+            dstWidth,
+            dstHeight,
+            1
+    );
+
+    if (rgbaBufferSize <= 0) {
+        clearRenderCache();
+        return false;
+    }
+
+    rgbaFrameCache = av_frame_alloc();
+    if (rgbaFrameCache == nullptr) {
+        clearRenderCache();
+        return false;
+    }
+
+    rgbaBufferCache.resize(static_cast<size_t>(rgbaBufferSize));
+
+    int fillRet = av_image_fill_arrays(
+            rgbaFrameCache->data,
+            rgbaFrameCache->linesize,
+            rgbaBufferCache.data(),
+            AV_PIX_FMT_RGBA,
+            dstWidth,
+            dstHeight,
+            1
+    );
+
+    if (fillRet < 0) {
+        clearRenderCache();
+        return false;
+    }
+
+    renderSrcWidth = srcWidth;
+    renderSrcHeight = srcHeight;
+    renderSrcFormat = srcFormat;
+    renderDstWidth = dstWidth;
+    renderDstHeight = dstHeight;
+
+    return true;
+}
+
+void NativePlayer::clearRenderCache() {
+    if (swsContextCache != nullptr) {
+        sws_freeContext(swsContextCache);
+        swsContextCache = nullptr;
+    }
+
+    if (rgbaFrameCache != nullptr) {
+        av_frame_free(&rgbaFrameCache);
+    }
+
+    rgbaBufferCache.clear();
+
+    renderSrcWidth = 0;
+    renderSrcHeight = 0;
+    renderSrcFormat = -1;
+    renderDstWidth = 0;
+    renderDstHeight = 0;
 }
 
 void NativePlayer::audioDecodeLoop() {

@@ -9,10 +9,12 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 struct AVFormatContext;
 struct ANativeWindow;
 struct AVFrame;
+struct SwsContext;
 
 class NativePlayer {
 public:
@@ -65,6 +67,15 @@ private:
     std::deque<struct AVPacket *> videoPacketQueue;
     std::deque<struct AVPacket *> audioPacketQueue;
 
+    SwsContext *swsContextCache;
+    AVFrame *rgbaFrameCache;
+    std::vector<uint8_t> rgbaBufferCache;
+    int renderSrcWidth;
+    int renderSrcHeight;
+    int renderSrcFormat;
+    int renderDstWidth;
+    int renderDstHeight;
+
     JavaVM *javaVm;
     jobject javaPlayerObject;
     jmethodID onNativeAudioInfoMethod;
@@ -78,6 +89,16 @@ private:
     void audioDecodeLoop();
 
     bool renderFrameToSurface(AVFrame *frame);
+
+    bool ensureRenderCache(
+            int srcWidth,
+            int srcHeight,
+            int srcFormat,
+            int dstWidth,
+            int dstHeight
+    );
+
+    void clearRenderCache();
 
     bool dequeueVideoPacket(struct AVPacket *outPacket);
 
