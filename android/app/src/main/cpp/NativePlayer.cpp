@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstring>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <vector>
 
@@ -25,6 +26,12 @@ extern "C" {
 #define ECH_LOGI(...) __android_log_print(ANDROID_LOG_INFO, ECH_LOG_TAG, __VA_ARGS__)
 #define ECH_LOGE(...) __android_log_print(ANDROID_LOG_ERROR, ECH_LOG_TAG, __VA_ARGS__)
 
+static constexpr size_t VIDEO_PACKET_QUEUE_MAX = 120;
+static constexpr size_t AUDIO_PACKET_QUEUE_MAX = 240;
+static constexpr int64_t AV_SYNC_THRESHOLD_MIN_US = 40000;   // 40ms
+static constexpr int64_t AV_SYNC_THRESHOLD_MAX_US = 100000;  // 100ms
+static constexpr int64_t AV_NOSYNC_THRESHOLD_US = 10000000;  // 10s
+
 NativePlayer::NativePlayer(JavaVM *vm, JNIEnv *env, jobject javaPlayer)
         : formatContext(nullptr),
           nativeWindow(nullptr),
@@ -35,6 +42,9 @@ NativePlayer::NativePlayer(JavaVM *vm, JNIEnv *env, jobject javaPlayer)
           playing(false),
           stopRequested(false),
           paused(false),
+          demuxFinished(false),
+          activePlaybackWorkers(0),
+          audioClockUs(std::numeric_limits<int64_t>::min()),
           javaVm(vm),
           javaPlayerObject(nullptr),
           onNativeAudioInfoMethod(nullptr),
@@ -225,14 +235,28 @@ std::string NativePlayer::play() {
         return "play ignored: already playing";
     }
 
+    if (demuxThread.joinable()) {
+        demuxThread.join();
+    }
+
     if (playThread.joinable()) {
         playThread.join();
     }
 
+    if (audioThread.joinable()) {
+        audioThread.join();
+    }
+
+    clearPacketQueues();
+
     stopRequested = false;
     paused = false;
+    demuxFinished = false;
     playing = true;
+    activePlaybackWorkers = audioStreamIndex >= 0 ? 2 : 1;
+    audioClockUs = std::numeric_limits<int64_t>::min();
 
+    demuxThread = std::thread(&NativePlayer::demuxLoop, this);
     playThread = std::thread(&NativePlayer::decodeLoop, this);
 
     if (audioStreamIndex >= 0) {
@@ -260,6 +284,11 @@ void NativePlayer::resume() {
 
 void NativePlayer::stop() {
     stopRequested = true;
+    packetQueueCond.notify_all();
+
+    if (demuxThread.joinable()) {
+        demuxThread.join();
+    }
 
     if (playThread.joinable()) {
         playThread.join();
@@ -269,13 +298,54 @@ void NativePlayer::stop() {
         audioThread.join();
     }
 
+    clearPacketQueues();
     playing = false;
+    demuxFinished = false;
+    activePlaybackWorkers = 0;
+    audioClockUs = std::numeric_limits<int64_t>::min();
 
     ECH_LOGI("play stopped");
 }
 
+void NativePlayer::demuxLoop() {
+    ECH_LOGI("demuxLoop start");
+
+    AVPacket *packet = av_packet_alloc();
+    if (packet == nullptr) {
+        demuxFinished = true;
+        packetQueueCond.notify_all();
+        ECH_LOGE("demux packet alloc failed");
+        return;
+    }
+
+    while (!stopRequested.load()) {
+        int ret = av_read_frame(formatContext, packet);
+        if (ret < 0) {
+            break;
+        }
+
+        if (packet->stream_index == videoStreamIndex || packet->stream_index == audioStreamIndex) {
+            enqueuePacket(packet);
+        }
+
+        av_packet_unref(packet);
+    }
+
+    av_packet_free(&packet);
+    demuxFinished = true;
+    packetQueueCond.notify_all();
+
+    ECH_LOGI("demuxLoop finished");
+}
+
 void NativePlayer::decodeLoop() {
     ECH_LOGI("decodeLoop start");
+
+    if (formatContext == nullptr || videoStreamIndex < 0) {
+        ECH_LOGE("decodeLoop invalid state");
+        markPlaybackWorkerFinished();
+        return;
+    }
 
     AVStream *videoStream = formatContext->streams[videoStreamIndex];
     AVCodecParameters *codecParameters = videoStream->codecpar;
@@ -283,14 +353,14 @@ void NativePlayer::decodeLoop() {
     const AVCodec *decoder = avcodec_find_decoder(codecParameters->codec_id);
     if (decoder == nullptr) {
         ECH_LOGE("decoder not found");
-        playing = false;
+        markPlaybackWorkerFinished();
         return;
     }
 
     AVCodecContext *codecContext = avcodec_alloc_context3(decoder);
     if (codecContext == nullptr) {
         ECH_LOGE("avcodec_alloc_context3 failed");
-        playing = false;
+        markPlaybackWorkerFinished();
         return;
     }
 
@@ -298,7 +368,7 @@ void NativePlayer::decodeLoop() {
     if (ret < 0) {
         ECH_LOGE("avcodec_parameters_to_context failed: %s", makeErrorString(ret).c_str());
         avcodec_free_context(&codecContext);
-        playing = false;
+        markPlaybackWorkerFinished();
         return;
     }
 
@@ -306,22 +376,15 @@ void NativePlayer::decodeLoop() {
     if (ret < 0) {
         ECH_LOGE("avcodec_open2 failed: %s", makeErrorString(ret).c_str());
         avcodec_free_context(&codecContext);
-        playing = false;
+        markPlaybackWorkerFinished();
         return;
     }
 
-    av_seek_frame(formatContext, videoStreamIndex, 0, AVSEEK_FLAG_BACKWARD);
-    avcodec_flush_buffers(codecContext);
-
-    AVPacket *packet = av_packet_alloc();
     AVFrame *frame = av_frame_alloc();
-
-    if (packet == nullptr || frame == nullptr) {
-        ECH_LOGE("alloc packet/frame failed");
-        av_packet_free(&packet);
-        av_frame_free(&frame);
+    if (frame == nullptr) {
+        ECH_LOGE("alloc frame failed");
         avcodec_free_context(&codecContext);
-        playing = false;
+        markPlaybackWorkerFinished();
         return;
     }
 
@@ -334,28 +397,106 @@ void NativePlayer::decodeLoop() {
         fps = 30.0;
     }
 
-    int frameDelayMs = static_cast<int>(1000.0 / fps);
-    if (frameDelayMs <= 0) {
-        frameDelayMs = 33;
+    int64_t defaultFrameDurationUs = static_cast<int64_t>(1000000.0 / fps);
+    if (defaultFrameDurationUs <= 0) {
+        defaultFrameDurationUs = 33333;
     }
 
-    int decodedFrameCount = 0;
+    AVRational videoTimeBase = videoStream->time_base;
 
-    while (!stopRequested && av_read_frame(formatContext, packet) >= 0) {
-        if (packet->stream_index != videoStreamIndex) {
-            av_packet_unref(packet);
-            continue;
+    int decodedFrameCount = 0;
+    int droppedFrameCount = 0;
+
+    auto renderFrameWithSync = [&](AVFrame *decodedFrame) -> bool {
+        while (paused.load() && !stopRequested.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
 
-        ret = avcodec_send_packet(codecContext, packet);
-        av_packet_unref(packet);
+        if (stopRequested.load()) {
+            av_frame_unref(decodedFrame);
+            return false;
+        }
+
+        int64_t frameDurationUs = defaultFrameDurationUs;
+        if (decodedFrame->duration > 0 && videoTimeBase.num > 0 && videoTimeBase.den > 0) {
+            int64_t packetDurationUs = av_rescale_q(
+                    decodedFrame->duration,
+                    videoTimeBase,
+                    AV_TIME_BASE_Q
+            );
+
+            if (packetDurationUs > 0 && packetDurationUs < AV_NOSYNC_THRESHOLD_US) {
+                frameDurationUs = packetDurationUs;
+            }
+        }
+
+        int64_t videoPtsUs = std::numeric_limits<int64_t>::min();
+        int64_t framePts = decodedFrame->best_effort_timestamp;
+        if (framePts == AV_NOPTS_VALUE) {
+            framePts = decodedFrame->pts;
+        }
+
+        if (framePts != AV_NOPTS_VALUE && videoTimeBase.num > 0 && videoTimeBase.den > 0) {
+            videoPtsUs = av_rescale_q(framePts, videoTimeBase, AV_TIME_BASE_Q);
+        }
+
+        int64_t delayUs = frameDurationUs;
+        if (audioStreamIndex >= 0 && videoPtsUs != std::numeric_limits<int64_t>::min()) {
+            int64_t masterClockUs = audioClockUs.load();
+
+            if (masterClockUs != std::numeric_limits<int64_t>::min()) {
+                int64_t diffUs = videoPtsUs - masterClockUs;
+                int64_t absDiffUs = diffUs >= 0 ? diffUs : -diffUs;
+
+                if (absDiffUs < AV_NOSYNC_THRESHOLD_US) {
+                    int64_t syncThresholdUs = std::max<int64_t>(
+                            AV_SYNC_THRESHOLD_MIN_US,
+                            std::min<int64_t>(AV_SYNC_THRESHOLD_MAX_US, frameDurationUs)
+                    );
+
+                    if (diffUs <= -syncThresholdUs) {
+                        // Video frame is late relative to audio clock; drop it.
+                        droppedFrameCount++;
+                        av_frame_unref(decodedFrame);
+                        return true;
+                    }
+
+                    if (diffUs >= syncThresholdUs) {
+                        delayUs = diffUs;
+                    }
+                }
+            }
+        }
+
+        if (delayUs > 0) {
+            std::this_thread::sleep_for(std::chrono::microseconds(delayUs));
+        }
+
+        if (stopRequested.load()) {
+            av_frame_unref(decodedFrame);
+            return false;
+        }
+
+        renderFrameToSurface(decodedFrame);
+        av_frame_unref(decodedFrame);
+        return true;
+    };
+
+    while (!stopRequested.load()) {
+        AVPacket packet = {0};
+        if (!dequeueVideoPacket(&packet)) {
+            break;
+        }
+
+        ret = avcodec_send_packet(codecContext, &packet);
+        av_packet_unref(&packet);
 
         if (ret < 0) {
             ECH_LOGE("avcodec_send_packet failed: %s", makeErrorString(ret).c_str());
             continue;
         }
 
-        while (!stopRequested) {
+        while (!stopRequested.load()) {
             ret = avcodec_receive_frame(codecContext, frame);
 
             if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
@@ -368,30 +509,41 @@ void NativePlayer::decodeLoop() {
             }
 
             decodedFrameCount++;
-
-            while (paused.load() && !stopRequested.load()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            }
-
-            if (stopRequested.load()) {
+            if (!renderFrameWithSync(frame)) {
                 break;
             }
-
-            renderFrameToSurface(frame);
-
-            av_frame_unref(frame);
-
-            std::this_thread::sleep_for(std::chrono::milliseconds(frameDelayMs));
         }
     }
 
-    ECH_LOGI("decodeLoop finished, decodedFrameCount=%d", decodedFrameCount);
+    // Flush buffered frames.
+    ret = avcodec_send_packet(codecContext, nullptr);
+    if (ret >= 0 || ret == AVERROR_EOF) {
+        while (!stopRequested.load()) {
+            ret = avcodec_receive_frame(codecContext, frame);
+            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+                break;
+            }
+            if (ret < 0) {
+                break;
+            }
 
-    av_packet_free(&packet);
+            decodedFrameCount++;
+            if (!renderFrameWithSync(frame)) {
+                break;
+            }
+        }
+    }
+
+    ECH_LOGI(
+            "decodeLoop finished, decodedFrameCount=%d, droppedFrameCount=%d",
+            decodedFrameCount,
+            droppedFrameCount
+    );
+
     av_frame_free(&frame);
     avcodec_free_context(&codecContext);
 
-    playing = false;
+    markPlaybackWorkerFinished();
 }
 
 bool NativePlayer::renderFrameToSurface(AVFrame *frame) {
@@ -555,58 +707,34 @@ bool NativePlayer::renderFrameToSurface(AVFrame *frame) {
 void NativePlayer::audioDecodeLoop() {
     ECH_LOGI("audioDecodeLoop start");
 
-    AVFormatContext *audioFormatContext = nullptr;
-
-    int ret = avformat_open_input(&audioFormatContext, dataSource.c_str(), nullptr, nullptr);
-    if (ret < 0) {
-        ECH_LOGE("audio avformat_open_input failed: %s", makeErrorString(ret).c_str());
+    if (formatContext == nullptr || audioStreamIndex < 0) {
+        ECH_LOGE("audioDecodeLoop invalid state");
+        markPlaybackWorkerFinished();
         return;
     }
 
-    ret = avformat_find_stream_info(audioFormatContext, nullptr);
-    if (ret < 0) {
-        ECH_LOGE("audio avformat_find_stream_info failed: %s", makeErrorString(ret).c_str());
-        avformat_close_input(&audioFormatContext);
-        return;
-    }
-
-    int audioIndex = av_find_best_stream(
-            audioFormatContext,
-            AVMEDIA_TYPE_AUDIO,
-            -1,
-            -1,
-            nullptr,
-            0
-    );
-
-    if (audioIndex < 0) {
-        ECH_LOGE("audio stream not found");
-        avformat_close_input(&audioFormatContext);
-        return;
-    }
-
-    AVStream *audioStream = audioFormatContext->streams[audioIndex];
+    AVStream *audioStream = formatContext->streams[audioStreamIndex];
     AVCodecParameters *codecParameters = audioStream->codecpar;
 
     const AVCodec *decoder = avcodec_find_decoder(codecParameters->codec_id);
     if (decoder == nullptr) {
         ECH_LOGE("audio decoder not found");
-        avformat_close_input(&audioFormatContext);
+        markPlaybackWorkerFinished();
         return;
     }
 
     AVCodecContext *codecContext = avcodec_alloc_context3(decoder);
     if (codecContext == nullptr) {
         ECH_LOGE("audio avcodec_alloc_context3 failed");
-        avformat_close_input(&audioFormatContext);
+        markPlaybackWorkerFinished();
         return;
     }
 
-    ret = avcodec_parameters_to_context(codecContext, codecParameters);
+    int ret = avcodec_parameters_to_context(codecContext, codecParameters);
     if (ret < 0) {
         ECH_LOGE("audio avcodec_parameters_to_context failed: %s", makeErrorString(ret).c_str());
         avcodec_free_context(&codecContext);
-        avformat_close_input(&audioFormatContext);
+        markPlaybackWorkerFinished();
         return;
     }
 
@@ -614,7 +742,7 @@ void NativePlayer::audioDecodeLoop() {
     if (ret < 0) {
         ECH_LOGE("audio avcodec_open2 failed: %s", makeErrorString(ret).c_str());
         avcodec_free_context(&codecContext);
-        avformat_close_input(&audioFormatContext);
+        markPlaybackWorkerFinished();
         return;
     }
 
@@ -652,7 +780,7 @@ void NativePlayer::audioDecodeLoop() {
         ECH_LOGE("swr_alloc_set_opts2 failed");
         av_channel_layout_uninit(&outChannelLayout);
         avcodec_free_context(&codecContext);
-        avformat_close_input(&audioFormatContext);
+        markPlaybackWorkerFinished();
         return;
     }
 
@@ -662,35 +790,33 @@ void NativePlayer::audioDecodeLoop() {
         swr_free(&swrContext);
         av_channel_layout_uninit(&outChannelLayout);
         avcodec_free_context(&codecContext);
-        avformat_close_input(&audioFormatContext);
+        markPlaybackWorkerFinished();
         return;
     }
 
     notifyAudioInfo(outSampleRate, outChannels);
+    audioClockUs = 0;
 
-    AVPacket *packet = av_packet_alloc();
     AVFrame *frame = av_frame_alloc();
 
-    if (packet == nullptr || frame == nullptr) {
-        av_packet_free(&packet);
-        av_frame_free(&frame);
+    if (frame == nullptr) {
         swr_free(&swrContext);
         av_channel_layout_uninit(&outChannelLayout);
         avcodec_free_context(&codecContext);
-        avformat_close_input(&audioFormatContext);
+        markPlaybackWorkerFinished();
         return;
     }
 
     int decodedAudioFrameCount = 0;
 
-    while (!stopRequested.load() && av_read_frame(audioFormatContext, packet) >= 0) {
-        if (packet->stream_index != audioIndex) {
-            av_packet_unref(packet);
-            continue;
+    while (!stopRequested.load()) {
+        AVPacket inputPacket = {0};
+        if (!dequeueAudioPacket(&inputPacket)) {
+            break;
         }
 
-        ret = avcodec_send_packet(codecContext, packet);
-        av_packet_unref(packet);
+        ret = avcodec_send_packet(codecContext, &inputPacket);
+        av_packet_unref(&inputPacket);
 
         if (ret < 0) {
             ECH_LOGE("audio avcodec_send_packet failed: %s", makeErrorString(ret).c_str());
@@ -711,6 +837,10 @@ void NativePlayer::audioDecodeLoop() {
 
             while (paused.load() && !stopRequested.load()) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+
+            if (stopRequested.load()) {
+                break;
             }
 
             int outSamples = static_cast<int>(
@@ -748,6 +878,77 @@ void NativePlayer::audioDecodeLoop() {
                                    * av_get_bytes_per_sample(AV_SAMPLE_FMT_S16);
 
                     notifyAudioData(outBuffer.data(), dataSize);
+                    int64_t playedSamples = convertedSamples;
+                    int64_t playedUs = (playedSamples * 1000000LL) / outSampleRate;
+                    audioClockUs.fetch_add(playedUs);
+                    decodedAudioFrameCount++;
+                }
+            }
+
+            av_frame_unref(frame);
+        }
+    }
+
+    // Flush buffered audio frames.
+    ret = avcodec_send_packet(codecContext, nullptr);
+    if (ret >= 0 || ret == AVERROR_EOF) {
+        while (!stopRequested.load()) {
+            ret = avcodec_receive_frame(codecContext, frame);
+
+            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+                break;
+            }
+
+            if (ret < 0) {
+                break;
+            }
+
+            while (paused.load() && !stopRequested.load()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+
+            if (stopRequested.load()) {
+                break;
+            }
+
+            int outSamples = static_cast<int>(
+                    av_rescale_rnd(
+                            swr_get_delay(swrContext, codecContext->sample_rate) + frame->nb_samples,
+                            outSampleRate,
+                            codecContext->sample_rate,
+                            AV_ROUND_UP
+                    )
+            );
+
+            int outBufferSize = av_samples_get_buffer_size(
+                    nullptr,
+                    outChannels,
+                    outSamples,
+                    AV_SAMPLE_FMT_S16,
+                    1
+            );
+
+            if (outBufferSize > 0) {
+                std::vector<uint8_t> outBuffer(outBufferSize);
+                uint8_t *outData[1] = {outBuffer.data()};
+
+                int convertedSamples = swr_convert(
+                        swrContext,
+                        outData,
+                        outSamples,
+                        const_cast<const uint8_t **>(frame->data),
+                        frame->nb_samples
+                );
+
+                if (convertedSamples > 0) {
+                    int dataSize = convertedSamples
+                                   * outChannels
+                                   * av_get_bytes_per_sample(AV_SAMPLE_FMT_S16);
+
+                    notifyAudioData(outBuffer.data(), dataSize);
+                    int64_t playedSamples = convertedSamples;
+                    int64_t playedUs = (playedSamples * 1000000LL) / outSampleRate;
+                    audioClockUs.fetch_add(playedUs);
                     decodedAudioFrameCount++;
                 }
             }
@@ -758,12 +959,151 @@ void NativePlayer::audioDecodeLoop() {
 
     ECH_LOGI("audioDecodeLoop finished, decodedAudioFrameCount=%d", decodedAudioFrameCount);
 
-    av_packet_free(&packet);
     av_frame_free(&frame);
     swr_free(&swrContext);
     av_channel_layout_uninit(&outChannelLayout);
     avcodec_free_context(&codecContext);
-    avformat_close_input(&audioFormatContext);
+
+    markPlaybackWorkerFinished();
+}
+
+bool NativePlayer::dequeueVideoPacket(AVPacket *outPacket) {
+    if (outPacket == nullptr) {
+        return false;
+    }
+
+    std::unique_lock<std::mutex> lock(packetQueueMutex);
+
+    while (!stopRequested.load() && videoPacketQueue.empty()) {
+        if (demuxFinished.load()) {
+            return false;
+        }
+        packetQueueCond.wait(lock);
+    }
+
+    if (stopRequested.load() || videoPacketQueue.empty()) {
+        return false;
+    }
+
+    AVPacket *srcPacket = videoPacketQueue.front();
+    videoPacketQueue.pop_front();
+    av_packet_move_ref(outPacket, srcPacket);
+    av_packet_free(&srcPacket);
+
+    packetQueueCond.notify_all();
+    return true;
+}
+
+bool NativePlayer::dequeueAudioPacket(AVPacket *outPacket) {
+    if (outPacket == nullptr) {
+        return false;
+    }
+
+    std::unique_lock<std::mutex> lock(packetQueueMutex);
+
+    while (!stopRequested.load() && audioPacketQueue.empty()) {
+        if (demuxFinished.load()) {
+            return false;
+        }
+        packetQueueCond.wait(lock);
+    }
+
+    if (stopRequested.load() || audioPacketQueue.empty()) {
+        return false;
+    }
+
+    AVPacket *srcPacket = audioPacketQueue.front();
+    audioPacketQueue.pop_front();
+    av_packet_move_ref(outPacket, srcPacket);
+    av_packet_free(&srcPacket);
+
+    packetQueueCond.notify_all();
+    return true;
+}
+
+void NativePlayer::enqueuePacket(AVPacket *packet) {
+    if (packet == nullptr) {
+        return;
+    }
+
+    AVPacket *clonePacket = av_packet_alloc();
+    if (clonePacket == nullptr) {
+        return;
+    }
+
+    int ret = av_packet_ref(clonePacket, packet);
+    if (ret < 0) {
+        av_packet_free(&clonePacket);
+        return;
+    }
+
+    std::unique_lock<std::mutex> lock(packetQueueMutex);
+
+    auto queueCanPush = [this, packet]() {
+        if (packet->stream_index == videoStreamIndex) {
+            return videoPacketQueue.size() < VIDEO_PACKET_QUEUE_MAX;
+        }
+        if (packet->stream_index == audioStreamIndex) {
+            return audioPacketQueue.size() < AUDIO_PACKET_QUEUE_MAX;
+        }
+        return true;
+    };
+
+    while (!stopRequested.load() && !queueCanPush()) {
+        packetQueueCond.wait(lock);
+    }
+
+    if (stopRequested.load()) {
+        lock.unlock();
+        av_packet_free(&clonePacket);
+        return;
+    }
+
+    if (packet->stream_index == videoStreamIndex) {
+        videoPacketQueue.push_back(clonePacket);
+        packetQueueCond.notify_all();
+        return;
+    }
+
+    if (packet->stream_index == audioStreamIndex) {
+        audioPacketQueue.push_back(clonePacket);
+        packetQueueCond.notify_all();
+        return;
+    }
+
+    lock.unlock();
+    av_packet_free(&clonePacket);
+}
+
+void NativePlayer::clearPacketQueues() {
+    std::lock_guard<std::mutex> lock(packetQueueMutex);
+
+    while (!videoPacketQueue.empty()) {
+        AVPacket *packet = videoPacketQueue.front();
+        videoPacketQueue.pop_front();
+        av_packet_free(&packet);
+    }
+
+    while (!audioPacketQueue.empty()) {
+        AVPacket *packet = audioPacketQueue.front();
+        audioPacketQueue.pop_front();
+        av_packet_free(&packet);
+    }
+
+    packetQueueCond.notify_all();
+}
+
+void NativePlayer::markPlaybackWorkerFinished() {
+    int expected = activePlaybackWorkers.load();
+    while (expected > 0) {
+        if (activePlaybackWorkers.compare_exchange_weak(expected, expected - 1)) {
+            if (expected - 1 == 0) {
+                playing = false;
+                packetQueueCond.notify_all();
+            }
+            return;
+        }
+    }
 }
 
 JNIEnv *NativePlayer::getJNIEnv(bool *needDetach) {

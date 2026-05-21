@@ -2,6 +2,9 @@
 #define ECHPLAY_NATIVE_PLAYER_H
 
 #include <atomic>
+#include <condition_variable>
+#include <cstdint>
+#include <deque>
 #include <jni.h>
 #include <mutex>
 #include <string>
@@ -49,9 +52,18 @@ private:
     std::atomic<bool> playing;
     std::atomic<bool> stopRequested;
     std::atomic<bool> paused;
+    std::atomic<bool> demuxFinished;
+    std::atomic<int> activePlaybackWorkers;
+    std::atomic<int64_t> audioClockUs;
 
+    std::thread demuxThread;
     std::thread playThread;
     std::thread audioThread;
+
+    std::mutex packetQueueMutex;
+    std::condition_variable packetQueueCond;
+    std::deque<struct AVPacket *> videoPacketQueue;
+    std::deque<struct AVPacket *> audioPacketQueue;
 
     JavaVM *javaVm;
     jobject javaPlayerObject;
@@ -59,11 +71,23 @@ private:
     jmethodID onNativeAudioDataMethod;
 
 private:
+    void demuxLoop();
+
     void decodeLoop();
 
     void audioDecodeLoop();
 
     bool renderFrameToSurface(AVFrame *frame);
+
+    bool dequeueVideoPacket(struct AVPacket *outPacket);
+
+    bool dequeueAudioPacket(struct AVPacket *outPacket);
+
+    void enqueuePacket(struct AVPacket *packet);
+
+    void clearPacketQueues();
+
+    void markPlaybackWorkerFinished();
 
     void releaseFormatContext();
 
