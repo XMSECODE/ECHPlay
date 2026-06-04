@@ -129,7 +129,19 @@ std::string NativePlayer::prepare() {
 
     ECH_LOGI("prepare start: %s", dataSource.c_str());
 
-    int ret = avformat_open_input(&formatContext, dataSource.c_str(), nullptr, nullptr);
+    avformat_network_init();
+
+    AVDictionary *options = nullptr;
+    if (dataSource.rfind("rtsp://", 0) == 0) {
+        av_dict_set(&options, "rtsp_transport", "tcp", 0);
+        av_dict_set(&options, "timeout", "5000000", 0);
+        av_dict_set(&options, "rw_timeout", "5000000", 0);
+        av_dict_set(&options, "buffer_size", "1024000", 0);
+        av_dict_set(&options, "max_delay", "500000", 0);
+    }
+
+    int ret = avformat_open_input(&formatContext, dataSource.c_str(), nullptr, &options);
+    av_dict_free(&options);
     if (ret < 0) {
         std::string error = makeErrorString(ret);
         ECH_LOGE("avformat_open_input failed: %s", error.c_str());
@@ -137,6 +149,7 @@ std::string NativePlayer::prepare() {
         return "prepare failed\n"
                "step: avformat_open_input\n"
                "error: " + error + "\n"
+               "hint: " + makeOpenInputHint(error) + "\n"
                "source: " + dataSource;
     }
 
@@ -1405,4 +1418,34 @@ std::string NativePlayer::makeErrorString(int ret) {
     char errorBuffer[AV_ERROR_MAX_STRING_SIZE] = {0};
     av_strerror(ret, errorBuffer, sizeof(errorBuffer));
     return std::string(errorBuffer);
+}
+
+std::string NativePlayer::makeOpenInputHint(const std::string &error) {
+    if (error.find("Connection timed out") != std::string::npos) {
+        return "连接超时。请检查设备 IP、端口、网络连通性，或尝试降低延迟设置。";
+    }
+
+    if (error.find("Connection refused") != std::string::npos) {
+        return "目标拒绝连接。请确认 RTSP 服务已启动，端口正确。";
+    }
+
+    if (error.find("401 Unauthorized") != std::string::npos
+        || error.find("Authorization") != std::string::npos) {
+        return "鉴权失败。请检查 RTSP 用户名和密码。";
+    }
+
+    if (error.find("404 Not Found") != std::string::npos
+        || error.find("No such file or directory") != std::string::npos) {
+        return "地址或流路径不存在。请检查 RTSP URL 是否完整。";
+    }
+
+    if (error.find("Invalid data found when processing input") != std::string::npos) {
+        return "连接建立了，但返回的数据不是可识别的音视频流。";
+    }
+
+    if (error.find("Protocol not found") != std::string::npos) {
+        return "当前 FFmpeg 构建未包含该协议支持。";
+    }
+
+    return "请检查 RTSP 地址、网络、账号密码，以及设备端是否正在推流。";
 }

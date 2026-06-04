@@ -1,5 +1,6 @@
 package com.example.abcplaydemo;
 
+import android.content.SharedPreferences;
 import android.graphics.PixelFormat;
 import android.os.Bundle;
 import android.os.Handler;
@@ -8,6 +9,7 @@ import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.SeekBar;
 import android.widget.TextView;
 
@@ -23,7 +25,13 @@ import java.io.InputStream;
 
 public class MainActivity extends AppCompatActivity {
 
+    private static final String PREFS_NAME = "player_prefs";
+    private static final String KEY_LAST_DATA_SOURCE = "last_data_source";
+    private static final String DEFAULT_RTSP_SOURCE = "rtsp://192.168.1.1:554/live";
+
     private SurfaceView surfaceView;
+    private EditText dataSourceInput;
+    private Button openButton;
     private Button pauseButton;
     private Button resumeButton;
     private Button stopButton;
@@ -35,6 +43,8 @@ public class MainActivity extends AppCompatActivity {
     private boolean demoStarted = false;
     private boolean userSeeking = false;
     private long durationMs = 0;
+    private int surfaceWidth = 0;
+    private int surfaceHeight = 0;
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private final Runnable progressUpdater = new Runnable() {
         @Override
@@ -51,6 +61,8 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
 
         surfaceView = findViewById(R.id.surfaceView);
+        dataSourceInput = findViewById(R.id.dataSourceInput);
+        openButton = findViewById(R.id.openButton);
         pauseButton = findViewById(R.id.pauseButton);
         resumeButton = findViewById(R.id.resumeButton);
         stopButton = findViewById(R.id.stopButton);
@@ -59,9 +71,12 @@ public class MainActivity extends AppCompatActivity {
         durationTimeText = findViewById(R.id.durationTimeText);
         sampleText = findViewById(R.id.sample_text);
 
+        restoreLastDataSource();
         sampleText.setText("等待 Surface 创建...");
         currentTimeText.setText(formatTime(0));
         durationTimeText.setText(formatTime(0));
+
+        openButton.setOnClickListener(v -> tryStartPlayback());
 
         pauseButton.setOnClickListener(v -> {
             if (player != null) {
@@ -127,6 +142,9 @@ public class MainActivity extends AppCompatActivity {
                     int width,
                     int height) {
 
+                surfaceWidth = width;
+                surfaceHeight = height;
+
                 if (demoStarted) {
                     return;
                 }
@@ -138,10 +156,7 @@ public class MainActivity extends AppCompatActivity {
                 }
 
                 demoStarted = true;
-
-                surfaceView.postDelayed(() -> {
-                    runPlayDemo(holder.getSurface(), width, height);
-                }, 500);
+                sampleText.setText("Surface 已创建，点击“播放”开始");
             }
 
             @Override
@@ -154,8 +169,31 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    private void tryStartPlayback() {
+        Surface surface = surfaceView.getHolder().getSurface();
+        if (surface == null || !surface.isValid()) {
+            sampleText.setText("Surface 还没准备好");
+            return;
+        }
+
+        persistLastDataSource();
+        runPlayDemo(surface, surfaceWidth, surfaceHeight);
+    }
+
     private void runPlayDemo(Surface surface, int surfaceWidth, int surfaceHeight) {
+        stopProgressUpdates();
+
+        if (player != null) {
+            player.stop();
+            player.release();
+            player = null;
+        }
+
         player = new ECHPlayer();
+        durationMs = 0;
+        progressSeekBar.setProgress(0);
+        currentTimeText.setText(formatTime(0));
+        durationTimeText.setText(formatTime(0));
 
         StringBuilder text = new StringBuilder();
         text.append("ECHPlayer video play demo\n");
@@ -169,10 +207,10 @@ public class MainActivity extends AppCompatActivity {
         text.append("\n\n");
 
         try {
-            File videoFile = copyAssetToCache("test.mp4");
+            String dataSource = resolveDataSource();
 
             player.setSurface(surface);
-            player.setDataSource(videoFile.getAbsolutePath());
+            player.setDataSource(dataSource);
 
             String prepareInfo = player.prepare();
             text.append(prepareInfo);
@@ -185,15 +223,41 @@ public class MainActivity extends AppCompatActivity {
             startProgressUpdates();
 
         } catch (IOException e) {
-            text.append("没有找到测试视频。\n\n");
-            text.append("请放一个 mp4 文件到：\n");
+            text.append("没有找到可播放的数据源。\n\n");
+            text.append("可以输入 rtsp:// 地址，或者保留空白回退到：\n");
             text.append("app/src/main/assets/test.mp4\n\n");
-            text.append("然后重新运行 App。\n\n");
             text.append("error: ");
             text.append(e.getMessage());
         }
 
         sampleText.setText(text.toString());
+    }
+
+    private String resolveDataSource() throws IOException {
+        String input = dataSourceInput.getText().toString().trim();
+        if (!input.isEmpty()) {
+            return input;
+        }
+
+        File videoFile = copyAssetToCache("test.mp4");
+        return videoFile.getAbsolutePath();
+    }
+
+    private void restoreLastDataSource() {
+        SharedPreferences preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        String lastDataSource = preferences.getString(KEY_LAST_DATA_SOURCE, DEFAULT_RTSP_SOURCE);
+        dataSourceInput.setText(lastDataSource);
+        dataSourceInput.setSelection(dataSourceInput.getText().length());
+    }
+
+    private void persistLastDataSource() {
+        String input = dataSourceInput.getText().toString().trim();
+        if (input.isEmpty()) {
+            return;
+        }
+
+        SharedPreferences preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        preferences.edit().putString(KEY_LAST_DATA_SOURCE, input).apply();
     }
 
     private void appendLog(String message) {

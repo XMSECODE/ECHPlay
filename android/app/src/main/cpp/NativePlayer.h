@@ -130,6 +130,8 @@ private:
 
     void notifyAudioData(uint8_t *data, int size);
 
+    std::string makeOpenInputHint(const std::string &error);
+
     std::string makeErrorString(int ret);
 };
 
