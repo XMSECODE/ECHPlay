@@ -1,8 +1,10 @@
 package com.example.abcplaydemo;
 
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.PixelFormat;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
@@ -10,8 +12,10 @@ import android.os.Looper;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.LinearLayout;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
 import android.widget.SeekBar;
@@ -48,6 +52,16 @@ public class MainActivity extends AppCompatActivity {
     private static final String SCREENSHOT_DIR = "screenshots";
     /** 录制目录名。 */
     private static final String RECORD_DIR = "records";
+    /** 模式：RTSP 流。 */
+    private static final int MODE_RTSP = 0;
+    /** 模式：本地文件。 */
+    private static final int MODE_LOCAL = 1;
+    /** 文件选择请求码。 */
+    private static final int REQUEST_PICK_FILE = 1001;
+    /** 播放模式缓存 key。 */
+    private static final String KEY_PLAY_MODE = "play_mode";
+    /** 本地文件路径缓存 key。 */
+    private static final String KEY_LOCAL_FILE_PATH = "local_file_path";
 
     /** 视频显示控件。 */
     private SurfaceView surfaceView;
@@ -61,6 +75,20 @@ public class MainActivity extends AppCompatActivity {
     private RadioButton transportTcpButton;
     /** UDP 选项按钮。 */
     private RadioButton transportUdpButton;
+    /** 播放模式组选框。 */
+    private RadioGroup modeGroup;
+    /** RTSP 模式按钮。 */
+    private RadioButton modeRtspButton;
+    /** 本地文件模式按钮。 */
+    private RadioButton modeLocalButton;
+    /** RTSP 输入区域布局。 */
+    private LinearLayout rtspInputLayout;
+    /** 本地文件输入区域布局。 */
+    private LinearLayout localInputLayout;
+    /** 本地文件路径输入框。 */
+    private EditText localPathInput;
+    /** 选择文件按钮。 */
+    private Button pickFileButton;
     /** 暂停按钮。 */
     private Button pauseButton;
     /** 继续按钮。 */
@@ -116,6 +144,13 @@ public class MainActivity extends AppCompatActivity {
         transportGroup = findViewById(R.id.transportGroup);
         transportTcpButton = findViewById(R.id.transportTcpButton);
         transportUdpButton = findViewById(R.id.transportUdpButton);
+        modeGroup = findViewById(R.id.modeGroup);
+        modeRtspButton = findViewById(R.id.modeRtspButton);
+        modeLocalButton = findViewById(R.id.modeLocalButton);
+        rtspInputLayout = findViewById(R.id.rtspInputLayout);
+        localInputLayout = findViewById(R.id.localInputLayout);
+        localPathInput = findViewById(R.id.localPathInput);
+        pickFileButton = findViewById(R.id.pickFileButton);
         pauseButton = findViewById(R.id.pauseButton);
         resumeButton = findViewById(R.id.resumeButton);
         stopButton = findViewById(R.id.stopButton);
@@ -126,13 +161,20 @@ public class MainActivity extends AppCompatActivity {
         durationTimeText = findViewById(R.id.durationTimeText);
         sampleText = findViewById(R.id.sample_text);
 
-        restoreLastDataSource();
+        restorePlayMode();
+        updateModeUi();
         sampleText.setText("等待 Surface 创建...");
         currentTimeText.setText(formatTime(0));
         durationTimeText.setText(formatTime(0));
         updateRecordButtonState();
 
+        modeGroup.setOnCheckedChangeListener((group, checkedId) -> {
+            persistPlayMode();
+            updateModeUi();
+        });
+
         openButton.setOnClickListener(v -> tryStartPlayback());
+        pickFileButton.setOnClickListener(v -> pickLocalFile());
 
         pauseButton.setOnClickListener(v -> {
             if (player != null) {
@@ -246,8 +288,7 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        persistLastDataSource();
-        persistRtspTransport();
+        persistPlayMode();
         runPlayDemo(surface, surfaceWidth, surfaceHeight);
     }
 
@@ -282,12 +323,16 @@ public class MainActivity extends AppCompatActivity {
         text.append(player.getFFmpegVersion());
         text.append("\n\n");
 
+        int playMode = modeGroup.getCheckedRadioButtonId() == R.id.modeLocalButton ? MODE_LOCAL : MODE_RTSP;
         try {
             String dataSource = resolveDataSource();
 
             player.setSurface(surface);
             player.setDataSource(dataSource);
-            player.setRtspTransport(resolveRtspTransport());
+
+            if (playMode == MODE_RTSP) {
+                player.setRtspTransport(resolveRtspTransport());
+            }
 
             String prepareInfo = player.prepare();
             text.append(prepareInfo);
@@ -302,8 +347,11 @@ public class MainActivity extends AppCompatActivity {
 
         } catch (IOException e) {
             text.append("没有找到可播放的数据源。\n\n");
-            text.append("可以输入 rtsp:// 地址，或者保留空白回退到：\n");
-            text.append("app/src/main/assets/test.mp4\n\n");
+            if (playMode == MODE_LOCAL) {
+                text.append("请通过选择文件按钮选取本地视频文件。\n\n");
+            } else {
+                text.append("可以输入 rtsp:// 地址\n\n");
+            }
             text.append("error: ");
             text.append(e.getMessage());
         }
@@ -313,20 +361,34 @@ public class MainActivity extends AppCompatActivity {
 
     /** 解析当前应该使用的数据源。 */
     private String resolveDataSource() throws IOException {
-        String input = dataSourceInput.getText().toString().trim();
-        if (!input.isEmpty()) {
-            return input;
+        int mode = modeGroup.getCheckedRadioButtonId() == R.id.modeLocalButton ? MODE_LOCAL : MODE_RTSP;
+        if (mode == MODE_LOCAL) {
+            String path = localPathInput.getText().toString().trim();
+            if (!path.isEmpty()) {
+                return path;
+            }
+            throw new IOException("本地文件路径为空，请选择文件或输入路径");
+        } else {
+            String input = dataSourceInput.getText().toString().trim();
+            if (!input.isEmpty()) {
+                return input;
+            }
+            throw new IOException("RTSP 地址为空，请输入 rtsp:// 地址");
         }
-
-        File videoFile = copyAssetToCache("test.mp4");
-        return videoFile.getAbsolutePath();
     }
 
-    /** 恢复上次输入的数据源和 RTSP 传输方式。 */
-    private void restoreLastDataSource() {
+    /** 恢复上次选择的播放模式及对应输入内容。 */
+    private void restorePlayMode() {
         SharedPreferences preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        String lastDataSource = preferences.getString(KEY_LAST_DATA_SOURCE, DEFAULT_RTSP_SOURCE);
-        dataSourceInput.setText(lastDataSource);
+        int mode = preferences.getInt(KEY_PLAY_MODE, MODE_RTSP);
+        if (mode == MODE_LOCAL) {
+            modeLocalButton.setChecked(true);
+        } else {
+            modeRtspButton.setChecked(true);
+        }
+
+        String lastRtsp = preferences.getString(KEY_LAST_DATA_SOURCE, DEFAULT_RTSP_SOURCE);
+        dataSourceInput.setText(lastRtsp);
         dataSourceInput.setSelection(dataSourceInput.getText().length());
 
         int transport = preferences.getInt(KEY_RTSP_TRANSPORT, ECHPlayer.RTSP_TRANSPORT_TCP);
@@ -334,6 +396,52 @@ public class MainActivity extends AppCompatActivity {
             transportUdpButton.setChecked(true);
         } else {
             transportTcpButton.setChecked(true);
+        }
+
+        String localPath = preferences.getString(KEY_LOCAL_FILE_PATH, "");
+        localPathInput.setText(localPath);
+        localPathInput.setSelection(localPath.length());
+    }
+
+    /** 持久化当前播放模式及对应输入内容。 */
+    private void persistPlayMode() {
+        SharedPreferences preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        int mode = modeGroup.getCheckedRadioButtonId() == R.id.modeLocalButton ? MODE_LOCAL : MODE_RTSP;
+        preferences.edit().putInt(KEY_PLAY_MODE, mode).apply();
+
+        String rtspInput = dataSourceInput.getText().toString().trim();
+        if (!rtspInput.isEmpty()) {
+            preferences.edit().putString(KEY_LAST_DATA_SOURCE, rtspInput).apply();
+        }
+        String localPath = localPathInput.getText().toString().trim();
+        preferences.edit().putString(KEY_LOCAL_FILE_PATH, localPath).apply();
+        preferences.edit().putInt(KEY_RTSP_TRANSPORT, resolveRtspTransport()).apply();
+    }
+
+    /** 根据当前播放模式切换输入区域的显示/隐藏。 */
+    private void updateModeUi() {
+        boolean isRtsp = modeGroup.getCheckedRadioButtonId() == R.id.modeRtspButton;
+        rtspInputLayout.setVisibility(isRtsp ? View.VISIBLE : View.GONE);
+        localInputLayout.setVisibility(isRtsp ? View.GONE : View.VISIBLE);
+    }
+
+    /** 打开系统文件选择器。 */
+    private void pickLocalFile() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("video/*");
+        startActivityForResult(intent, REQUEST_PICK_FILE);
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_PICK_FILE && resultCode == RESULT_OK && data != null) {
+            Uri uri = data.getData();
+            if (uri != null) {
+                localPathInput.setText(uri.toString());
+                persistPlayMode();
+            }
         }
     }
 
