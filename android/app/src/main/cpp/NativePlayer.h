@@ -38,6 +38,10 @@ public:
 
     std::string seekToMs(int64_t positionMs);
 
+    int64_t getDurationMs();
+
+    int64_t getCurrentPositionMs();
+
     std::string getFFmpegVersion();
 
 private:

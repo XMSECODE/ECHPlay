@@ -77,6 +77,16 @@ public class ECHPlayer implements AutoCloseable {
         return nativeSeekToMs(nativeHandle, positionMs);
     }
 
+    public synchronized long getDurationMs() {
+        checkReleased();
+        return nativeGetDurationMs(nativeHandle);
+    }
+
+    public synchronized long getCurrentPositionMs() {
+        checkReleased();
+        return nativeGetCurrentPositionMs(nativeHandle);
+    }
+
     public synchronized String getFFmpegVersion() {
         checkReleased();
         return nativeGetFFmpegVersion(nativeHandle);
@@ -174,6 +184,10 @@ public class ECHPlayer implements AutoCloseable {
     private native void nativeStop(long nativeHandle);
 
     private native String nativeSeekToMs(long nativeHandle, long positionMs);
+
+    private native long nativeGetDurationMs(long nativeHandle);
+
+    private native long nativeGetCurrentPositionMs(long nativeHandle);
 
     private native String nativeGetFFmpegVersion(long nativeHandle);
 }

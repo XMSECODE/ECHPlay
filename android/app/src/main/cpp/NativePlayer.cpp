@@ -409,6 +409,23 @@ std::string NativePlayer::seekToMs(int64_t positionMs) {
     return "seek success\npositionMs: " + std::to_string(positionMs);
 }
 
+int64_t NativePlayer::getDurationMs() {
+    if (formatContext == nullptr || formatContext->duration == AV_NOPTS_VALUE) {
+        return -1;
+    }
+
+    return formatContext->duration / 1000;
+}
+
+int64_t NativePlayer::getCurrentPositionMs() {
+    int64_t clockUs = audioClockUs.load();
+    if (clockUs == std::numeric_limits<int64_t>::min()) {
+        return -1;
+    }
+
+    return clockUs / 1000;
+}
+
 void NativePlayer::demuxLoop() {
     ECH_LOGI("demuxLoop start");
 

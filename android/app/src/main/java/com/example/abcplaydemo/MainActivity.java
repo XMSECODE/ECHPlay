@@ -2,8 +2,11 @@ package com.example.abcplaydemo;
 
 import android.graphics.PixelFormat;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.Surface;
 import android.view.SurfaceHolder;
+import android.widget.SeekBar;
 
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
@@ -21,6 +24,16 @@ public class MainActivity extends AppCompatActivity {
     private ActivityMainBinding binding;
     private ECHPlayer player;
     private boolean demoStarted = false;
+    private boolean userSeeking = false;
+    private long durationMs = 0;
+    private final Handler uiHandler = new Handler(Looper.getMainLooper());
+    private final Runnable progressUpdater = new Runnable() {
+        @Override
+        public void run() {
+            updateProgressUi();
+            uiHandler.postDelayed(this, 300);
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -30,6 +43,8 @@ public class MainActivity extends AppCompatActivity {
         setContentView(binding.getRoot());
 
         binding.sampleText.setText("等待 Surface 创建...");
+        binding.currentTimeText.setText(formatTime(0));
+        binding.durationTimeText.setText(formatTime(0));
 
         binding.pauseButton.setOnClickListener(v -> {
             if (player != null) {
@@ -52,13 +67,31 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        binding.surfaceView.setOnLongClickListener(v -> {
-            if (player != null) {
-                String seekInfo = player.seekToMs(5000);
-                appendLog(seekInfo);
-                return true;
+        binding.progressSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (fromUser) {
+                    long previewPositionMs = durationMs * progress / 1000L;
+                    binding.currentTimeText.setText(formatTime(previewPositionMs));
+                }
             }
-            return false;
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+                userSeeking = true;
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+                userSeeking = false;
+
+                if (player != null && durationMs > 0) {
+                    long targetPositionMs = durationMs * seekBar.getProgress() / 1000L;
+                    String seekInfo = player.seekToMs(targetPositionMs);
+                    appendLog(seekInfo);
+                    updateProgressUi();
+                }
+            }
         });
 
         SurfaceHolder holder = binding.surfaceView.getHolder();
@@ -127,9 +160,12 @@ public class MainActivity extends AppCompatActivity {
             String prepareInfo = player.prepare();
             text.append(prepareInfo);
             text.append("\n\n");
+            durationMs = Math.max(0, player.getDurationMs());
+            binding.durationTimeText.setText(formatTime(durationMs));
 
             String playInfo = player.play();
             text.append(playInfo);
+            startProgressUpdates();
 
         } catch (IOException e) {
             text.append("没有找到测试视频。\n\n");
@@ -145,6 +181,48 @@ public class MainActivity extends AppCompatActivity {
 
     private void appendLog(String message) {
         binding.sampleText.append("\n" + message);
+    }
+
+    private void startProgressUpdates() {
+        uiHandler.removeCallbacks(progressUpdater);
+        uiHandler.post(progressUpdater);
+    }
+
+    private void stopProgressUpdates() {
+        uiHandler.removeCallbacks(progressUpdater);
+    }
+
+    private void updateProgressUi() {
+        if (player == null) {
+            return;
+        }
+
+        long latestDurationMs = player.getDurationMs();
+        if (latestDurationMs > 0) {
+            durationMs = latestDurationMs;
+            binding.durationTimeText.setText(formatTime(durationMs));
+        }
+
+        long currentPositionMs = player.getCurrentPositionMs();
+        if (currentPositionMs < 0) {
+            return;
+        }
+
+        if (!userSeeking) {
+            binding.currentTimeText.setText(formatTime(currentPositionMs));
+
+            if (durationMs > 0) {
+                int progress = (int) Math.min(1000L, currentPositionMs * 1000L / durationMs);
+                binding.progressSeekBar.setProgress(progress);
+            }
+        }
+    }
+
+    private String formatTime(long timeMs) {
+        long totalSeconds = Math.max(0, timeMs / 1000);
+        long minutes = totalSeconds / 60;
+        long seconds = totalSeconds % 60;
+        return String.format("%02d:%02d", minutes, seconds);
     }
 
     private File copyAssetToCache(String assetName) throws IOException {
@@ -169,6 +247,8 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        stopProgressUpdates();
+
         if (player != null) {
             player.stop();
             player.release();

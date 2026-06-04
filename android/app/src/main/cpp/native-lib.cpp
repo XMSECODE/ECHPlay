@@ -178,6 +178,36 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativeSeekToMs(
 }
 
 extern "C"
+JNIEXPORT jlong JNICALL
+Java_com_example_abcplaydemo_player_ECHPlayer_nativeGetDurationMs(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return static_cast<jlong>(-1);
+    }
+
+    return static_cast<jlong>(player->getDurationMs());
+}
+
+extern "C"
+JNIEXPORT jlong JNICALL
+Java_com_example_abcplaydemo_player_ECHPlayer_nativeGetCurrentPositionMs(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return static_cast<jlong>(-1);
+    }
+
+    return static_cast<jlong>(player->getCurrentPositionMs());
+}
+
+extern "C"
 JNIEXPORT jstring JNICALL
 Java_com_example_abcplaydemo_player_ECHPlayer_nativeGetFFmpegVersion(
         JNIEnv *env,
