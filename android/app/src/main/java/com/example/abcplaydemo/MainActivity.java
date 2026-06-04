@@ -1,8 +1,10 @@
 package com.example.abcplaydemo;
 
 import android.content.SharedPreferences;
+import android.graphics.Bitmap;
 import android.graphics.PixelFormat;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.Surface;
@@ -24,34 +26,76 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 
+/**
+ * 播放器 Demo 主页面，负责播放控制、截图和录制交互。
+ */
 public class MainActivity extends AppCompatActivity {
 
+    /** SharedPreferences 文件名。 */
     private static final String PREFS_NAME = "player_prefs";
+    /** 上次数据源缓存 key。 */
     private static final String KEY_LAST_DATA_SOURCE = "last_data_source";
+    /** RTSP 传输方式缓存 key。 */
     private static final String KEY_RTSP_TRANSPORT = "rtsp_transport";
+    /** 默认 RTSP 地址。 */
     private static final String DEFAULT_RTSP_SOURCE = "rtsp://192.168.1.1:554/live";
+    /** 截图目录名。 */
+    private static final String SCREENSHOT_DIR = "screenshots";
+    /** 录制目录名。 */
+    private static final String RECORD_DIR = "records";
 
+    /** 视频显示控件。 */
     private SurfaceView surfaceView;
+    /** 数据源输入框。 */
     private EditText dataSourceInput;
+    /** 播放按钮。 */
     private Button openButton;
+    /** RTSP 传输组选框。 */
     private RadioGroup transportGroup;
+    /** TCP 选项按钮。 */
     private RadioButton transportTcpButton;
+    /** UDP 选项按钮。 */
     private RadioButton transportUdpButton;
+    /** 暂停按钮。 */
     private Button pauseButton;
+    /** 继续按钮。 */
     private Button resumeButton;
+    /** 停止按钮。 */
     private Button stopButton;
+    /** 截图按钮。 */
+    private Button captureButton;
+    /** 录制按钮。 */
+    private Button recordButton;
+    /** 播放进度条。 */
     private SeekBar progressSeekBar;
+    /** 当前播放时间文本。 */
     private TextView currentTimeText;
+    /** 总时长文本。 */
     private TextView durationTimeText;
+    /** 日志文本。 */
     private TextView sampleText;
+    /** Java 播放器实例。 */
     private ECHPlayer player;
+    /** Surface 是否已准备完毕。 */
     private boolean demoStarted = false;
+    /** 用户是否正在拖动进度条。 */
     private boolean userSeeking = false;
+    /** 当前媒体总时长。 */
     private long durationMs = 0;
+    /** Surface 宽度。 */
     private int surfaceWidth = 0;
+    /** Surface 高度。 */
     private int surfaceHeight = 0;
+    /** 当前录制文件路径。 */
+    private String currentRecordingPath = null;
+    /** 主线程 Handler。 */
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
+    /** 定时刷新进度的任务。 */
     private final Runnable progressUpdater = new Runnable() {
         @Override
         public void run() {
@@ -75,6 +119,8 @@ public class MainActivity extends AppCompatActivity {
         pauseButton = findViewById(R.id.pauseButton);
         resumeButton = findViewById(R.id.resumeButton);
         stopButton = findViewById(R.id.stopButton);
+        captureButton = findViewById(R.id.captureButton);
+        recordButton = findViewById(R.id.recordButton);
         progressSeekBar = findViewById(R.id.progressSeekBar);
         currentTimeText = findViewById(R.id.currentTimeText);
         durationTimeText = findViewById(R.id.durationTimeText);
@@ -84,6 +130,7 @@ public class MainActivity extends AppCompatActivity {
         sampleText.setText("等待 Surface 创建...");
         currentTimeText.setText(formatTime(0));
         durationTimeText.setText(formatTime(0));
+        updateRecordButtonState();
 
         openButton.setOnClickListener(v -> tryStartPlayback());
 
@@ -103,10 +150,18 @@ public class MainActivity extends AppCompatActivity {
 
         stopButton.setOnClickListener(v -> {
             if (player != null) {
+                if (player.isRecording()) {
+                    appendLog(player.stopRecording());
+                    currentRecordingPath = null;
+                }
                 player.stop();
+                updateRecordButtonState();
                 appendLog("stop");
             }
         });
+
+        captureButton.setOnClickListener(v -> captureCurrentFrame());
+        recordButton.setOnClickListener(v -> toggleRecording());
 
         progressSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
@@ -171,13 +226,19 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void surfaceDestroyed(@NonNull SurfaceHolder holder) {
                 if (player != null) {
+                    if (player.isRecording()) {
+                        appendLog(player.stopRecording());
+                        currentRecordingPath = null;
+                    }
                     player.stop();
                     player.setSurface(null);
+                    updateRecordButtonState();
                 }
             }
         });
     }
 
+    /** 尝试启动播放。 */
     private void tryStartPlayback() {
         Surface surface = surfaceView.getHolder().getSurface();
         if (surface == null || !surface.isValid()) {
@@ -190,16 +251,21 @@ public class MainActivity extends AppCompatActivity {
         runPlayDemo(surface, surfaceWidth, surfaceHeight);
     }
 
+    /** 运行播放器演示并开始播放。 */
     private void runPlayDemo(Surface surface, int surfaceWidth, int surfaceHeight) {
         stopProgressUpdates();
 
         if (player != null) {
+            if (player.isRecording()) {
+                appendLog(player.stopRecording());
+            }
             player.stop();
             player.release();
             player = null;
         }
 
         player = new ECHPlayer();
+        currentRecordingPath = null;
         durationMs = 0;
         progressSeekBar.setProgress(0);
         currentTimeText.setText(formatTime(0));
@@ -232,6 +298,7 @@ public class MainActivity extends AppCompatActivity {
             String playInfo = player.play();
             text.append(playInfo);
             startProgressUpdates();
+            updateRecordButtonState();
 
         } catch (IOException e) {
             text.append("没有找到可播放的数据源。\n\n");
@@ -244,6 +311,7 @@ public class MainActivity extends AppCompatActivity {
         sampleText.setText(text.toString());
     }
 
+    /** 解析当前应该使用的数据源。 */
     private String resolveDataSource() throws IOException {
         String input = dataSourceInput.getText().toString().trim();
         if (!input.isEmpty()) {
@@ -254,6 +322,7 @@ public class MainActivity extends AppCompatActivity {
         return videoFile.getAbsolutePath();
     }
 
+    /** 恢复上次输入的数据源和 RTSP 传输方式。 */
     private void restoreLastDataSource() {
         SharedPreferences preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         String lastDataSource = preferences.getString(KEY_LAST_DATA_SOURCE, DEFAULT_RTSP_SOURCE);
@@ -268,6 +337,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    /** 持久化当前输入的数据源。 */
     private void persistLastDataSource() {
         String input = dataSourceInput.getText().toString().trim();
         if (input.isEmpty()) {
@@ -278,30 +348,36 @@ public class MainActivity extends AppCompatActivity {
         preferences.edit().putString(KEY_LAST_DATA_SOURCE, input).apply();
     }
 
+    /** 持久化当前 RTSP 传输方式。 */
     private void persistRtspTransport() {
         SharedPreferences preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         preferences.edit().putInt(KEY_RTSP_TRANSPORT, resolveRtspTransport()).apply();
     }
 
+    /** 解析当前 RTSP 传输方式。 */
     private int resolveRtspTransport() {
         return transportGroup.getCheckedRadioButtonId() == R.id.transportUdpButton
                 ? ECHPlayer.RTSP_TRANSPORT_UDP
                 : ECHPlayer.RTSP_TRANSPORT_TCP;
     }
 
+    /** 追加一条日志到页面。 */
     private void appendLog(String message) {
         sampleText.append("\n" + message);
     }
 
+    /** 启动进度刷新任务。 */
     private void startProgressUpdates() {
         uiHandler.removeCallbacks(progressUpdater);
         uiHandler.post(progressUpdater);
     }
 
+    /** 停止进度刷新任务。 */
     private void stopProgressUpdates() {
         uiHandler.removeCallbacks(progressUpdater);
     }
 
+    /** 刷新播放进度 UI。 */
     private void updateProgressUi() {
         if (player == null) {
             return;
@@ -326,15 +402,108 @@ public class MainActivity extends AppCompatActivity {
                 progressSeekBar.setProgress(progress);
             }
         }
+
+        updateRecordButtonState();
     }
 
+    /** 更新录制按钮的显示文本。 */
+    private void updateRecordButtonState() {
+        if (player != null && player.isRecording()) {
+            recordButton.setText("停止录制");
+        } else {
+            recordButton.setText("开始录制");
+        }
+    }
+
+    /** 把最近一帧解码后的 RGBA 数据保存为 PNG。 */
+    private void captureCurrentFrame() {
+        if (player == null) {
+            appendLog("capture failed: player is null");
+            return;
+        }
+
+        int[] frameSize = player.getCurrentFrameSize();
+        byte[] rgbaData = player.getCurrentFrameRgba();
+        int frameWidth = frameSize != null && frameSize.length >= 2 ? frameSize[0] : 0;
+        int frameHeight = frameSize != null && frameSize.length >= 2 ? frameSize[1] : 0;
+
+        if (frameWidth <= 0 || frameHeight <= 0 || rgbaData == null || rgbaData.length == 0) {
+            appendLog("capture failed: current decoded frame is unavailable");
+            return;
+        }
+
+        int expectedSize = frameWidth * frameHeight * 4;
+        if (rgbaData.length < expectedSize) {
+            appendLog("capture failed: rgba data size is invalid");
+            return;
+        }
+
+        File outputFile = buildOutputFile(SCREENSHOT_DIR, "png");
+        Bitmap bitmap = Bitmap.createBitmap(frameWidth, frameHeight, Bitmap.Config.ARGB_8888);
+        bitmap.copyPixelsFromBuffer(ByteBuffer.wrap(rgbaData, 0, expectedSize));
+
+        try (FileOutputStream outputStream = new FileOutputStream(outputFile, false)) {
+            boolean compressed = bitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream);
+            outputStream.flush();
+            if (compressed) {
+                appendLog("capture success\nfile: " + outputFile.getAbsolutePath());
+            } else {
+                appendLog("capture failed: bitmap compress returned false");
+            }
+        } catch (IOException e) {
+            appendLog("capture failed: " + e.getMessage());
+        }
+    }
+
+    /** 切换录制状态。 */
+    private void toggleRecording() {
+        if (player == null) {
+            appendLog("record failed: player is null");
+            return;
+        }
+
+        if (player.isRecording()) {
+            appendLog(player.stopRecording());
+            currentRecordingPath = null;
+            updateRecordButtonState();
+            return;
+        }
+
+        File outputFile = buildOutputFile(RECORD_DIR, "mkv");
+        currentRecordingPath = outputFile.getAbsolutePath();
+        appendLog(player.startRecording(currentRecordingPath));
+        if (!player.isRecording()) {
+            currentRecordingPath = null;
+        }
+        updateRecordButtonState();
+    }
+
+    /** 生成输出文件路径。 */
+    private File buildOutputFile(String subDirName, String extension) {
+        File baseDir = getExternalFilesDir(Environment.DIRECTORY_MOVIES);
+        if (baseDir == null) {
+            baseDir = getFilesDir();
+        }
+
+        File targetDir = new File(baseDir, subDirName);
+        if (!targetDir.exists()) {
+            //noinspection ResultOfMethodCallIgnored
+            targetDir.mkdirs();
+        }
+
+        String timeText = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
+        return new File(targetDir, "echplay_" + timeText + "." + extension);
+    }
+
+    /** 把毫秒格式化成 mm:ss。 */
     private String formatTime(long timeMs) {
         long totalSeconds = Math.max(0, timeMs / 1000);
         long minutes = totalSeconds / 60;
         long seconds = totalSeconds % 60;
-        return String.format("%02d:%02d", minutes, seconds);
+        return String.format(Locale.US, "%02d:%02d", minutes, seconds);
     }
 
+    /** 把 asset 中的测试文件复制到缓存目录。 */
     private File copyAssetToCache(String assetName) throws IOException {
         File outFile = new File(getCacheDir(), assetName);
 
@@ -360,6 +529,9 @@ public class MainActivity extends AppCompatActivity {
         stopProgressUpdates();
 
         if (player != null) {
+            if (player.isRecording()) {
+                appendLog(player.stopRecording());
+            }
             player.stop();
             player.release();
             player = null;

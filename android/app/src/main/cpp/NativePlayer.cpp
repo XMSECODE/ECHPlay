@@ -32,6 +32,7 @@ static constexpr int64_t AV_SYNC_THRESHOLD_MIN_US = 40000;   // 40ms
 static constexpr int64_t AV_SYNC_THRESHOLD_MAX_US = 100000;  // 100ms
 static constexpr int64_t AV_NOSYNC_THRESHOLD_US = 10000000;  // 10s
 
+/** 创建 Native 播放器实例并缓存 Java 回调。 */
 NativePlayer::NativePlayer(JavaVM *vm, JNIEnv *env, jobject javaPlayer)
         : formatContext(nullptr),
           nativeWindow(nullptr),
@@ -46,17 +47,28 @@ NativePlayer::NativePlayer(JavaVM *vm, JNIEnv *env, jobject javaPlayer)
           activePlaybackWorkers(0),
           audioClockUs(std::numeric_limits<int64_t>::min()),
           swsContextCache(nullptr),
+          captureSwsContextCache(nullptr),
           rgbaFrameCache(nullptr),
+          captureFrameCache(nullptr),
+          captureFrameWidth(0),
+          captureFrameHeight(0),
           renderSrcWidth(0),
           renderSrcHeight(0),
           renderSrcFormat(-1),
           renderDstWidth(0),
           renderDstHeight(0),
+          captureSrcWidth(0),
+          captureSrcHeight(0),
+          captureSrcFormat(-1),
           rtspTransport(0),
           javaVm(vm),
           javaPlayerObject(nullptr),
           onNativeAudioInfoMethod(nullptr),
-          onNativeAudioDataMethod(nullptr) {
+          onNativeAudioDataMethod(nullptr),
+          recordFormatContext(nullptr),
+          recording(false),
+          recordingOutputPath(),
+          recordHeaderWritten(false) {
 
     if (env != nullptr && javaPlayer != nullptr) {
         javaPlayerObject = env->NewGlobalRef(javaPlayer);
@@ -82,6 +94,7 @@ NativePlayer::NativePlayer(JavaVM *vm, JNIEnv *env, jobject javaPlayer)
     ECH_LOGI("NativePlayer create");
 }
 
+/** 销毁 Native 播放器并释放所有资源。 */
 NativePlayer::~NativePlayer() {
     released = true;
 
@@ -94,11 +107,13 @@ NativePlayer::~NativePlayer() {
     ECH_LOGI("NativePlayer destroy");
 }
 
+/** 设置数据源路径或网络地址。 */
 void NativePlayer::setDataSource(const std::string &source) {
     dataSource = source;
     ECH_LOGI("setDataSource: %s", dataSource.c_str());
 }
 
+/** 设置渲染输出 Surface。 */
 void NativePlayer::setSurface(ANativeWindow *window) {
     std::lock_guard<std::mutex> lock(windowMutex);
 
@@ -121,11 +136,13 @@ void NativePlayer::setSurface(ANativeWindow *window) {
     }
 }
 
+/** 设置 RTSP 传输方式，0 为 TCP，1 为 UDP。 */
 void NativePlayer::setRtspTransport(int transport) {
     rtspTransport = transport;
     ECH_LOGI("setRtspTransport: %d", rtspTransport);
 }
 
+/** 打开输入流并读取音视频信息。 */
 std::string NativePlayer::prepare() {
     if (dataSource.empty()) {
         return "prepare failed: dataSource is empty";
@@ -251,6 +268,7 @@ std::string NativePlayer::prepare() {
     return oss.str();
 }
 
+/** 启动播放线程。 */
 std::string NativePlayer::play() {
     if (!prepared || formatContext == nullptr) {
         return "play failed: player is not prepared";
@@ -300,6 +318,7 @@ std::string NativePlayer::play() {
     return "play started";
 }
 
+/** 暂停播放。 */
 void NativePlayer::pause() {
     if (playing.load() && !stopRequested.load()) {
         paused = true;
@@ -307,6 +326,7 @@ void NativePlayer::pause() {
     }
 }
 
+/** 恢复播放。 */
 void NativePlayer::resume() {
     if (playing.load() && !stopRequested.load()) {
         paused = false;
@@ -314,6 +334,7 @@ void NativePlayer::resume() {
     }
 }
 
+/** 停止播放并同步停止录制。 */
 void NativePlayer::stop() {
     stopRequested = true;
     packetQueueCond.notify_all();
@@ -330,6 +351,11 @@ void NativePlayer::stop() {
         audioThread.join();
     }
 
+    {
+        std::lock_guard<std::mutex> recordLock(recordMutex);
+        stopRecordingLocked();
+    }
+
     clearPacketQueues();
     clearRenderCache();
     playing = false;
@@ -340,6 +366,7 @@ void NativePlayer::stop() {
     ECH_LOGI("play stopped");
 }
 
+/** 跳转到指定毫秒位置。 */
 std::string NativePlayer::seekToMs(int64_t positionMs) {
     if (!prepared || formatContext == nullptr) {
         return "seek failed: player is not prepared";
@@ -351,6 +378,14 @@ std::string NativePlayer::seekToMs(int64_t positionMs) {
 
     bool wasPlaying = playing.load();
     bool wasPaused = paused.load();
+    bool wasRecording = false;
+    std::string resumeRecordPath;
+
+    {
+        std::lock_guard<std::mutex> recordLock(recordMutex);
+        wasRecording = recording;
+        resumeRecordPath = recordingOutputPath;
+    }
 
     auto startPlaybackThreads = [&](bool startPaused) {
         stopRequested = false;
@@ -379,6 +414,11 @@ std::string NativePlayer::seekToMs(int64_t positionMs) {
         }
         if (audioThread.joinable()) {
             audioThread.join();
+        }
+
+        {
+            std::lock_guard<std::mutex> recordLock(recordMutex);
+            stopRecordingLocked();
         }
 
         clearPacketQueues();
@@ -412,6 +452,9 @@ std::string NativePlayer::seekToMs(int64_t positionMs) {
 
         if (wasPlaying) {
             startPlaybackThreads(wasPaused);
+            if (wasRecording && !resumeRecordPath.empty()) {
+                startRecording(resumeRecordPath);
+            }
         }
 
         return "seek failed\n"
@@ -428,11 +471,15 @@ std::string NativePlayer::seekToMs(int64_t positionMs) {
 
     if (wasPlaying) {
         startPlaybackThreads(wasPaused);
+        if (wasRecording && !resumeRecordPath.empty()) {
+            startRecording(resumeRecordPath);
+        }
     }
 
     return "seek success\npositionMs: " + std::to_string(positionMs);
 }
 
+/** 返回总时长，单位毫秒。 */
 int64_t NativePlayer::getDurationMs() {
     if (formatContext == nullptr || formatContext->duration == AV_NOPTS_VALUE) {
         return -1;
@@ -441,6 +488,7 @@ int64_t NativePlayer::getDurationMs() {
     return formatContext->duration / 1000;
 }
 
+/** 返回当前播放位置，单位毫秒。 */
 int64_t NativePlayer::getCurrentPositionMs() {
     int64_t clockUs = audioClockUs.load();
     if (clockUs == std::numeric_limits<int64_t>::min()) {
@@ -450,6 +498,121 @@ int64_t NativePlayer::getCurrentPositionMs() {
     return clockUs / 1000;
 }
 
+/** 原子复制最近一帧截图快照。 */
+bool NativePlayer::copyCurrentFrameSnapshot(
+        std::vector<uint8_t> &rgbaData,
+        int &frameWidth,
+        int &frameHeight) {
+    std::lock_guard<std::mutex> lock(captureFrameMutex);
+    if (captureFrameWidth <= 0 || captureFrameHeight <= 0 || captureFrameRgba.empty()) {
+        return false;
+    }
+
+    rgbaData = captureFrameRgba;
+    frameWidth = captureFrameWidth;
+    frameHeight = captureFrameHeight;
+    return true;
+}
+
+/** 开始录制当前播放中的码流到输出文件。 */
+std::string NativePlayer::startRecording(const std::string &outputPath) {
+    if (!prepared || formatContext == nullptr) {
+        return "start recording failed: player is not prepared";
+    }
+
+    if (outputPath.empty()) {
+        return "start recording failed: output path is empty";
+    }
+
+    std::lock_guard<std::mutex> recordLock(recordMutex);
+    stopRecordingLocked();
+
+    AVFormatContext *outputContext = nullptr;
+    int ret = avformat_alloc_output_context2(&outputContext, nullptr, "matroska", outputPath.c_str());
+    if (ret < 0 || outputContext == nullptr) {
+        return "start recording failed\nerror: " + makeErrorString(ret < 0 ? ret : AVERROR_UNKNOWN);
+    }
+
+    std::vector<int> streamMapping(formatContext->nb_streams, -1);
+    std::vector<int64_t> startPts(formatContext->nb_streams, AV_NOPTS_VALUE);
+    std::vector<int64_t> startDts(formatContext->nb_streams, AV_NOPTS_VALUE);
+
+    for (unsigned int inputIndex = 0; inputIndex < formatContext->nb_streams; ++inputIndex) {
+        AVStream *inputStream = formatContext->streams[inputIndex];
+        if (inputStream == nullptr || inputStream->codecpar == nullptr) {
+            continue;
+        }
+
+        AVMediaType mediaType = inputStream->codecpar->codec_type;
+        if (mediaType != AVMEDIA_TYPE_VIDEO && mediaType != AVMEDIA_TYPE_AUDIO) {
+            continue;
+        }
+
+        AVStream *outputStream = avformat_new_stream(outputContext, nullptr);
+        if (outputStream == nullptr) {
+            avformat_free_context(outputContext);
+            return "start recording failed\nerror: avformat_new_stream failed";
+        }
+
+        ret = avcodec_parameters_copy(outputStream->codecpar, inputStream->codecpar);
+        if (ret < 0) {
+            avformat_free_context(outputContext);
+            return "start recording failed\nerror: " + makeErrorString(ret);
+        }
+
+        outputStream->codecpar->codec_tag = 0;
+        outputStream->time_base = inputStream->time_base;
+        streamMapping[inputIndex] = outputStream->index;
+    }
+
+    if (!(outputContext->oformat->flags & AVFMT_NOFILE)) {
+        ret = avio_open(&outputContext->pb, outputPath.c_str(), AVIO_FLAG_WRITE);
+        if (ret < 0) {
+            avformat_free_context(outputContext);
+            return "start recording failed\nerror: " + makeErrorString(ret);
+        }
+    }
+
+    ret = avformat_write_header(outputContext, nullptr);
+    if (ret < 0) {
+        if (!(outputContext->oformat->flags & AVFMT_NOFILE) && outputContext->pb != nullptr) {
+            avio_closep(&outputContext->pb);
+        }
+        avformat_free_context(outputContext);
+        return "start recording failed\nerror: " + makeErrorString(ret);
+    }
+
+    recordFormatContext = outputContext;
+    recordStreamMapping = std::move(streamMapping);
+    recordStartPts = std::move(startPts);
+    recordStartDts = std::move(startDts);
+    recordingOutputPath = outputPath;
+    recordHeaderWritten = true;
+    recording = true;
+
+    ECH_LOGI("recording started: %s", recordingOutputPath.c_str());
+    return "recording started\nfile: " + recordingOutputPath;
+}
+
+/** 停止录制并写入文件尾。 */
+std::string NativePlayer::stopRecording() {
+    std::lock_guard<std::mutex> recordLock(recordMutex);
+    if (!recording) {
+        return "recording not running";
+    }
+
+    std::string finishedPath = recordingOutputPath;
+    stopRecordingLocked();
+    return "recording stopped\nfile: " + finishedPath;
+}
+
+/** 返回当前是否正在录制。 */
+bool NativePlayer::isRecording() {
+    std::lock_guard<std::mutex> recordLock(recordMutex);
+    return recording;
+}
+
+/** 解封装线程，负责读取原始包并分发给解码与录制。 */
 void NativePlayer::demuxLoop() {
     ECH_LOGI("demuxLoop start");
 
@@ -467,6 +630,8 @@ void NativePlayer::demuxLoop() {
             break;
         }
 
+        writeRecordingPacket(packet);
+
         if (packet->stream_index == videoStreamIndex || packet->stream_index == audioStreamIndex) {
             enqueuePacket(packet);
         }
@@ -481,6 +646,7 @@ void NativePlayer::demuxLoop() {
     ECH_LOGI("demuxLoop finished");
 }
 
+/** 视频解码线程，负责解码和按时钟渲染。 */
 void NativePlayer::decodeLoop() {
     ECH_LOGI("decodeLoop start");
 
@@ -598,7 +764,6 @@ void NativePlayer::decodeLoop() {
                     );
 
                     if (diffUs <= -syncThresholdUs) {
-                        // Video frame is late relative to audio clock; drop it.
                         droppedFrameCount++;
                         av_frame_unref(decodedFrame);
                         return true;
@@ -658,7 +823,6 @@ void NativePlayer::decodeLoop() {
         }
     }
 
-    // Flush buffered frames.
     ret = avcodec_send_packet(codecContext, nullptr);
     if (ret >= 0 || ret == AVERROR_EOF) {
         while (!stopRequested.load()) {
@@ -689,6 +853,7 @@ void NativePlayer::decodeLoop() {
     markPlaybackWorkerFinished();
 }
 
+/** 把解码后视频帧按 fitCenter 方式渲染到 Surface。 */
 bool NativePlayer::renderFrameToSurface(AVFrame *frame) {
     if (frame == nullptr) {
         return false;
@@ -723,7 +888,6 @@ bool NativePlayer::renderFrameToSurface(AVFrame *frame) {
         return false;
     }
 
-    // fitCenter：保持视频比例，完整显示在 Surface 中
     float scaleX = static_cast<float>(surfaceWidth) / static_cast<float>(videoWidth);
     float scaleY = static_cast<float>(surfaceHeight) / static_cast<float>(videoHeight);
     float scale = std::min(scaleX, scaleY);
@@ -756,6 +920,11 @@ bool NativePlayer::renderFrameToSurface(AVFrame *frame) {
         return false;
     }
 
+    if (!ensureCaptureCache(videoWidth, videoHeight, frame->format)) {
+        ANativeWindow_release(window);
+        return false;
+    }
+
     sws_scale(
             swsContextCache,
             frame->data,
@@ -765,6 +934,22 @@ bool NativePlayer::renderFrameToSurface(AVFrame *frame) {
             rgbaFrameCache->data,
             rgbaFrameCache->linesize
     );
+
+    {
+        std::lock_guard<std::mutex> captureLock(captureFrameMutex);
+        sws_scale(
+                captureSwsContextCache,
+                frame->data,
+                frame->linesize,
+                0,
+                videoHeight,
+                captureFrameCache->data,
+                captureFrameCache->linesize
+        );
+        captureFrameWidth = videoWidth;
+        captureFrameHeight = videoHeight;
+        captureFrameRgba = captureFrameBufferCache;
+    }
 
     ANativeWindow_Buffer windowBuffer;
     ret = ANativeWindow_lock(window, &windowBuffer, nullptr);
@@ -780,12 +965,10 @@ bool NativePlayer::renderFrameToSurface(AVFrame *frame) {
     uint8_t *src = rgbaFrameCache->data[0];
     int srcStride = rgbaFrameCache->linesize[0];
 
-    // 先把整个 Surface 清黑，作为黑边背景
     for (int y = 0; y < windowBuffer.height; ++y) {
         memset(dst + y * dstStride, 0, dstStride);
     }
 
-    // 居中绘制等比缩放后的 RGBA 图像
     int copyHeight = std::min(renderHeight, windowBuffer.height - offsetY);
     int copyWidthBytes = std::min(renderWidth, windowBuffer.width - offsetX) * 4;
 
@@ -802,6 +985,7 @@ bool NativePlayer::renderFrameToSurface(AVFrame *frame) {
     return true;
 }
 
+/** 确保渲染缓存尺寸与像素格式匹配。 */
 bool NativePlayer::ensureRenderCache(
         int srcWidth,
         int srcHeight,
@@ -888,6 +1072,101 @@ bool NativePlayer::ensureRenderCache(
     return true;
 }
 
+/** 确保截图缓存尺寸与当前原始帧一致。 */
+bool NativePlayer::ensureCaptureCache(
+        int srcWidth,
+        int srcHeight,
+        int srcFormat) {
+
+    if (srcWidth <= 0 || srcHeight <= 0) {
+        return false;
+    }
+
+    bool cacheMatches = captureSwsContextCache != nullptr
+                        && captureFrameCache != nullptr
+                        && captureSrcWidth == srcWidth
+                        && captureSrcHeight == srcHeight
+                        && captureSrcFormat == srcFormat;
+
+    if (cacheMatches) {
+        return true;
+    }
+
+    if (captureSwsContextCache != nullptr) {
+        sws_freeContext(captureSwsContextCache);
+        captureSwsContextCache = nullptr;
+    }
+
+    if (captureFrameCache != nullptr) {
+        av_frame_free(&captureFrameCache);
+    }
+
+    captureFrameBufferCache.clear();
+
+    captureSwsContextCache = sws_getContext(
+            srcWidth,
+            srcHeight,
+            static_cast<AVPixelFormat>(srcFormat),
+            srcWidth,
+            srcHeight,
+            AV_PIX_FMT_RGBA,
+            SWS_BILINEAR,
+            nullptr,
+            nullptr,
+            nullptr
+    );
+
+    if (captureSwsContextCache == nullptr) {
+        return false;
+    }
+
+    int rgbaBufferSize = av_image_get_buffer_size(
+            AV_PIX_FMT_RGBA,
+            srcWidth,
+            srcHeight,
+            1
+    );
+
+    if (rgbaBufferSize <= 0) {
+        sws_freeContext(captureSwsContextCache);
+        captureSwsContextCache = nullptr;
+        return false;
+    }
+
+    captureFrameCache = av_frame_alloc();
+    if (captureFrameCache == nullptr) {
+        sws_freeContext(captureSwsContextCache);
+        captureSwsContextCache = nullptr;
+        return false;
+    }
+
+    captureFrameBufferCache.resize(static_cast<size_t>(rgbaBufferSize));
+
+    int fillRet = av_image_fill_arrays(
+            captureFrameCache->data,
+            captureFrameCache->linesize,
+            captureFrameBufferCache.data(),
+            AV_PIX_FMT_RGBA,
+            srcWidth,
+            srcHeight,
+            1
+    );
+
+    if (fillRet < 0) {
+        av_frame_free(&captureFrameCache);
+        sws_freeContext(captureSwsContextCache);
+        captureSwsContextCache = nullptr;
+        captureFrameBufferCache.clear();
+        return false;
+    }
+
+    captureSrcWidth = srcWidth;
+    captureSrcHeight = srcHeight;
+    captureSrcFormat = srcFormat;
+    return true;
+}
+
+/** 清理渲染相关缓存。 */
 void NativePlayer::clearRenderCache() {
     if (swsContextCache != nullptr) {
         sws_freeContext(swsContextCache);
@@ -900,13 +1179,35 @@ void NativePlayer::clearRenderCache() {
 
     rgbaBufferCache.clear();
 
+    if (captureSwsContextCache != nullptr) {
+        sws_freeContext(captureSwsContextCache);
+        captureSwsContextCache = nullptr;
+    }
+
+    if (captureFrameCache != nullptr) {
+        av_frame_free(&captureFrameCache);
+    }
+
+    captureFrameBufferCache.clear();
+
+    {
+        std::lock_guard<std::mutex> captureLock(captureFrameMutex);
+        captureFrameRgba.clear();
+        captureFrameWidth = 0;
+        captureFrameHeight = 0;
+    }
+
     renderSrcWidth = 0;
     renderSrcHeight = 0;
     renderSrcFormat = -1;
     renderDstWidth = 0;
     renderDstHeight = 0;
+    captureSrcWidth = 0;
+    captureSrcHeight = 0;
+    captureSrcFormat = -1;
 }
 
+/** 音频解码线程，负责解码、重采样并回调 Java 播放。 */
 void NativePlayer::audioDecodeLoop() {
     ECH_LOGI("audioDecodeLoop start");
 
@@ -1092,7 +1393,6 @@ void NativePlayer::audioDecodeLoop() {
         }
     }
 
-    // Flush buffered audio frames.
     ret = avcodec_send_packet(codecContext, nullptr);
     if (ret >= 0 || ret == AVERROR_EOF) {
         while (!stopRequested.load()) {
@@ -1170,6 +1470,7 @@ void NativePlayer::audioDecodeLoop() {
     markPlaybackWorkerFinished();
 }
 
+/** 从视频包队列取一个包。 */
 bool NativePlayer::dequeueVideoPacket(AVPacket *outPacket) {
     if (outPacket == nullptr) {
         return false;
@@ -1197,6 +1498,7 @@ bool NativePlayer::dequeueVideoPacket(AVPacket *outPacket) {
     return true;
 }
 
+/** 从音频包队列取一个包。 */
 bool NativePlayer::dequeueAudioPacket(AVPacket *outPacket) {
     if (outPacket == nullptr) {
         return false;
@@ -1224,6 +1526,7 @@ bool NativePlayer::dequeueAudioPacket(AVPacket *outPacket) {
     return true;
 }
 
+/** 把输入包推入相应音视频队列。 */
 void NativePlayer::enqueuePacket(AVPacket *packet) {
     if (packet == nullptr) {
         return;
@@ -1278,6 +1581,7 @@ void NativePlayer::enqueuePacket(AVPacket *packet) {
     av_packet_free(&clonePacket);
 }
 
+/** 清空音视频包队列。 */
 void NativePlayer::clearPacketQueues() {
     std::lock_guard<std::mutex> lock(packetQueueMutex);
 
@@ -1296,6 +1600,7 @@ void NativePlayer::clearPacketQueues() {
     packetQueueCond.notify_all();
 }
 
+/** 记录一个播放工作线程结束。 */
 void NativePlayer::markPlaybackWorkerFinished() {
     int expected = activePlaybackWorkers.load();
     while (expected > 0) {
@@ -1309,6 +1614,113 @@ void NativePlayer::markPlaybackWorkerFinished() {
     }
 }
 
+/** 把输入包写入录制输出文件。 */
+void NativePlayer::writeRecordingPacket(AVPacket *packet) {
+    if (packet == nullptr) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> recordLock(recordMutex);
+    if (!recording || recordFormatContext == nullptr) {
+        return;
+    }
+
+    if (packet->stream_index < 0
+        || static_cast<size_t>(packet->stream_index) >= recordStreamMapping.size()) {
+        return;
+    }
+
+    int outputStreamIndex = recordStreamMapping[packet->stream_index];
+    if (outputStreamIndex < 0) {
+        return;
+    }
+
+    AVStream *inputStream = formatContext->streams[packet->stream_index];
+    AVStream *outputStream = recordFormatContext->streams[outputStreamIndex];
+    if (inputStream == nullptr || outputStream == nullptr) {
+        return;
+    }
+
+    AVPacket outputPacket = {0};
+    if (av_packet_ref(&outputPacket, packet) < 0) {
+        return;
+    }
+
+    outputPacket.stream_index = outputStreamIndex;
+
+    if (outputPacket.pts != AV_NOPTS_VALUE) {
+        if (recordStartPts[packet->stream_index] == AV_NOPTS_VALUE) {
+            recordStartPts[packet->stream_index] = outputPacket.pts;
+        }
+        outputPacket.pts -= recordStartPts[packet->stream_index];
+        if (outputPacket.pts < 0) {
+            outputPacket.pts = 0;
+        }
+    }
+
+    if (outputPacket.dts != AV_NOPTS_VALUE) {
+        if (recordStartDts[packet->stream_index] == AV_NOPTS_VALUE) {
+            recordStartDts[packet->stream_index] = outputPacket.dts;
+        }
+        outputPacket.dts -= recordStartDts[packet->stream_index];
+        if (outputPacket.dts < 0) {
+            outputPacket.dts = 0;
+        }
+    }
+
+    if (outputPacket.duration > 0) {
+        outputPacket.duration = av_rescale_q(
+                outputPacket.duration,
+                inputStream->time_base,
+                outputStream->time_base
+        );
+    }
+
+    outputPacket.pos = -1;
+    av_packet_rescale_ts(&outputPacket, inputStream->time_base, outputStream->time_base);
+
+    int ret = av_interleaved_write_frame(recordFormatContext, &outputPacket);
+    if (ret < 0) {
+        ECH_LOGE("record write packet failed: %s", makeErrorString(ret).c_str());
+        stopRecordingLocked();
+    }
+
+    av_packet_unref(&outputPacket);
+}
+
+/** 在已持有录制锁时关闭录制上下文。 */
+void NativePlayer::stopRecordingLocked() {
+    if (!recording && recordFormatContext == nullptr) {
+        recordStreamMapping.clear();
+        recordStartPts.clear();
+        recordStartDts.clear();
+        recordingOutputPath.clear();
+        recordHeaderWritten = false;
+        return;
+    }
+
+    if (recordFormatContext != nullptr) {
+        if (recordHeaderWritten) {
+            av_write_trailer(recordFormatContext);
+        }
+
+        if (!(recordFormatContext->oformat->flags & AVFMT_NOFILE) && recordFormatContext->pb != nullptr) {
+            avio_closep(&recordFormatContext->pb);
+        }
+
+        avformat_free_context(recordFormatContext);
+        recordFormatContext = nullptr;
+    }
+
+    recordStreamMapping.clear();
+    recordStartPts.clear();
+    recordStartDts.clear();
+    recordingOutputPath.clear();
+    recordHeaderWritten = false;
+    recording = false;
+}
+
+/** 获取当前线程可用的 JNIEnv。 */
 JNIEnv *NativePlayer::getJNIEnv(bool *needDetach) {
     if (needDetach != nullptr) {
         *needDetach = false;
@@ -1337,12 +1749,14 @@ JNIEnv *NativePlayer::getJNIEnv(bool *needDetach) {
     return nullptr;
 }
 
+/** 释放当前线程绑定的 JNIEnv。 */
 void NativePlayer::releaseJNIEnv(bool needDetach) {
     if (needDetach && javaVm != nullptr) {
         javaVm->DetachCurrentThread();
     }
 }
 
+/** 回调 Java 侧创建音频输出。 */
 void NativePlayer::notifyAudioInfo(int sampleRate, int channels) {
     bool needDetach = false;
     JNIEnv *env = getJNIEnv(&needDetach);
@@ -1354,6 +1768,7 @@ void NativePlayer::notifyAudioInfo(int sampleRate, int channels) {
     releaseJNIEnv(needDetach);
 }
 
+/** 回调 Java 侧写入 PCM 数据。 */
 void NativePlayer::notifyAudioData(uint8_t *data, int size) {
     if (data == nullptr || size <= 0) {
         return;
@@ -1380,6 +1795,7 @@ void NativePlayer::notifyAudioData(uint8_t *data, int size) {
     releaseJNIEnv(needDetach);
 }
 
+/** 释放 Java 回调对象引用。 */
 void NativePlayer::releaseJavaCallback() {
     if (javaVm == nullptr || javaPlayerObject == nullptr) {
         return;
@@ -1399,10 +1815,12 @@ void NativePlayer::releaseJavaCallback() {
     releaseJNIEnv(needDetach);
 }
 
+/** 返回 FFmpeg 版本。 */
 std::string NativePlayer::getFFmpegVersion() {
     return std::string(av_version_info());
 }
 
+/** 释放输入格式上下文。 */
 void NativePlayer::releaseFormatContext() {
     stop();
 
@@ -1416,6 +1834,7 @@ void NativePlayer::releaseFormatContext() {
     prepared = false;
 }
 
+/** 释放 Surface 引用。 */
 void NativePlayer::releaseSurface() {
     std::lock_guard<std::mutex> lock(windowMutex);
 
@@ -1425,12 +1844,14 @@ void NativePlayer::releaseSurface() {
     }
 }
 
+/** 把 FFmpeg 错误码转成字符串。 */
 std::string NativePlayer::makeErrorString(int ret) {
     char errorBuffer[AV_ERROR_MAX_STRING_SIZE] = {0};
     av_strerror(ret, errorBuffer, sizeof(errorBuffer));
     return std::string(errorBuffer);
 }
 
+/** 生成打开输入流失败时的中文提示。 */
 std::string NativePlayer::makeOpenInputHint(const std::string &error) {
     if (error.find("Connection timed out") != std::string::npos) {
         return "连接超时。请检查设备 IP、端口、网络连通性，或尝试降低延迟设置。";

@@ -5,6 +5,7 @@
 
 #include "NativePlayer.h"
 
+/** 根据 nativeHandle 还原 NativePlayer 指针。 */
 static NativePlayer *getPlayer(jlong nativeHandle) {
     return reinterpret_cast<NativePlayer *>(nativeHandle);
 }
@@ -219,6 +220,129 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativeGetCurrentPositionMs(
     }
 
     return static_cast<jlong>(player->getCurrentPositionMs());
+}
+
+extern "C"
+JNIEXPORT jbyteArray JNICALL
+Java_com_example_abcplaydemo_player_ECHPlayer_nativeGetCurrentFrameRgba(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return nullptr;
+    }
+
+    std::vector<uint8_t> rgbaData;
+    int frameWidth = 0;
+    int frameHeight = 0;
+    if (!player->copyCurrentFrameSnapshot(rgbaData, frameWidth, frameHeight) || rgbaData.empty()) {
+        return nullptr;
+    }
+
+    jbyteArray result = env->NewByteArray(static_cast<jsize>(rgbaData.size()));
+    if (result == nullptr) {
+        return nullptr;
+    }
+
+    env->SetByteArrayRegion(
+            result,
+            0,
+            static_cast<jsize>(rgbaData.size()),
+            reinterpret_cast<const jbyte *>(rgbaData.data())
+    );
+    return result;
+}
+
+extern "C"
+JNIEXPORT jintArray JNICALL
+Java_com_example_abcplaydemo_player_ECHPlayer_nativeGetCurrentFrameSize(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return nullptr;
+    }
+
+    std::vector<uint8_t> rgbaData;
+    int frameWidth = 0;
+    int frameHeight = 0;
+    if (!player->copyCurrentFrameSnapshot(rgbaData, frameWidth, frameHeight)) {
+        return nullptr;
+    }
+
+    jintArray result = env->NewIntArray(2);
+    if (result == nullptr) {
+        return nullptr;
+    }
+
+    jint sizeArray[2] = {
+            static_cast<jint>(frameWidth),
+            static_cast<jint>(frameHeight)
+    };
+    env->SetIntArrayRegion(result, 0, 2, sizeArray);
+    return result;
+}
+
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_com_example_abcplaydemo_player_ECHPlayer_nativeStartRecording(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle,
+        jstring outputPath) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return env->NewStringUTF("start recording failed: NativePlayer is null");
+    }
+
+    if (outputPath == nullptr) {
+        return env->NewStringUTF("start recording failed: output path is null");
+    }
+
+    const char *pathChars = env->GetStringUTFChars(outputPath, nullptr);
+    if (pathChars == nullptr) {
+        return env->NewStringUTF("start recording failed: cannot read output path");
+    }
+
+    std::string result = player->startRecording(pathChars);
+    env->ReleaseStringUTFChars(outputPath, pathChars);
+    return env->NewStringUTF(result.c_str());
+}
+
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_com_example_abcplaydemo_player_ECHPlayer_nativeStopRecording(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return env->NewStringUTF("stop recording failed: NativePlayer is null");
+    }
+
+    std::string result = player->stopRecording();
+    return env->NewStringUTF(result.c_str());
+}
+
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_com_example_abcplaydemo_player_ECHPlayer_nativeIsRecording(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return JNI_FALSE;
+    }
+
+    return player->isRecording() ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C"
