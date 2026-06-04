@@ -6,12 +6,14 @@ import android.os.Handler;
 import android.os.Looper;
 import android.view.Surface;
 import android.view.SurfaceHolder;
+import android.view.SurfaceView;
+import android.widget.Button;
 import android.widget.SeekBar;
+import android.widget.TextView;
 
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 
-import com.example.abcplaydemo.databinding.ActivityMainBinding;
 import com.example.abcplaydemo.player.ECHPlayer;
 
 import java.io.File;
@@ -21,7 +23,14 @@ import java.io.InputStream;
 
 public class MainActivity extends AppCompatActivity {
 
-    private ActivityMainBinding binding;
+    private SurfaceView surfaceView;
+    private Button pauseButton;
+    private Button resumeButton;
+    private Button stopButton;
+    private SeekBar progressSeekBar;
+    private TextView currentTimeText;
+    private TextView durationTimeText;
+    private TextView sampleText;
     private ECHPlayer player;
     private boolean demoStarted = false;
     private boolean userSeeking = false;
@@ -39,40 +48,48 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        binding = ActivityMainBinding.inflate(getLayoutInflater());
-        setContentView(binding.getRoot());
+        setContentView(R.layout.activity_main);
 
-        binding.sampleText.setText("等待 Surface 创建...");
-        binding.currentTimeText.setText(formatTime(0));
-        binding.durationTimeText.setText(formatTime(0));
+        surfaceView = findViewById(R.id.surfaceView);
+        pauseButton = findViewById(R.id.pauseButton);
+        resumeButton = findViewById(R.id.resumeButton);
+        stopButton = findViewById(R.id.stopButton);
+        progressSeekBar = findViewById(R.id.progressSeekBar);
+        currentTimeText = findViewById(R.id.currentTimeText);
+        durationTimeText = findViewById(R.id.durationTimeText);
+        sampleText = findViewById(R.id.sample_text);
 
-        binding.pauseButton.setOnClickListener(v -> {
+        sampleText.setText("等待 Surface 创建...");
+        currentTimeText.setText(formatTime(0));
+        durationTimeText.setText(formatTime(0));
+
+        pauseButton.setOnClickListener(v -> {
             if (player != null) {
                 player.pause();
                 appendLog("pause");
             }
         });
 
-        binding.resumeButton.setOnClickListener(v -> {
+        resumeButton.setOnClickListener(v -> {
             if (player != null) {
                 player.resume();
                 appendLog("resume");
             }
         });
 
-        binding.stopButton.setOnClickListener(v -> {
+        stopButton.setOnClickListener(v -> {
             if (player != null) {
                 player.stop();
                 appendLog("stop");
             }
         });
 
-        binding.progressSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+        progressSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                 if (fromUser) {
                     long previewPositionMs = durationMs * progress / 1000L;
-                    binding.currentTimeText.setText(formatTime(previewPositionMs));
+                    currentTimeText.setText(formatTime(previewPositionMs));
                 }
             }
 
@@ -94,13 +111,13 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        SurfaceHolder holder = binding.surfaceView.getHolder();
+        SurfaceHolder holder = surfaceView.getHolder();
         holder.setFormat(PixelFormat.RGBA_8888);
 
         holder.addCallback(new SurfaceHolder.Callback() {
             @Override
             public void surfaceCreated(@NonNull SurfaceHolder holder) {
-                binding.sampleText.setText("Surface created，等待 surfaceChanged...");
+                sampleText.setText("Surface created，等待 surfaceChanged...");
             }
 
             @Override
@@ -116,13 +133,13 @@ public class MainActivity extends AppCompatActivity {
 
                 Surface surface = holder.getSurface();
                 if (surface == null || !surface.isValid()) {
-                    binding.sampleText.setText("Surface 无效");
+                    sampleText.setText("Surface 无效");
                     return;
                 }
 
                 demoStarted = true;
 
-                binding.surfaceView.postDelayed(() -> {
+                surfaceView.postDelayed(() -> {
                     runPlayDemo(holder.getSurface(), width, height);
                 }, 500);
             }
@@ -161,7 +178,7 @@ public class MainActivity extends AppCompatActivity {
             text.append(prepareInfo);
             text.append("\n\n");
             durationMs = Math.max(0, player.getDurationMs());
-            binding.durationTimeText.setText(formatTime(durationMs));
+            durationTimeText.setText(formatTime(durationMs));
 
             String playInfo = player.play();
             text.append(playInfo);
@@ -176,11 +193,11 @@ public class MainActivity extends AppCompatActivity {
             text.append(e.getMessage());
         }
 
-        binding.sampleText.setText(text.toString());
+        sampleText.setText(text.toString());
     }
 
     private void appendLog(String message) {
-        binding.sampleText.append("\n" + message);
+        sampleText.append("\n" + message);
     }
 
     private void startProgressUpdates() {
@@ -200,7 +217,7 @@ public class MainActivity extends AppCompatActivity {
         long latestDurationMs = player.getDurationMs();
         if (latestDurationMs > 0) {
             durationMs = latestDurationMs;
-            binding.durationTimeText.setText(formatTime(durationMs));
+            durationTimeText.setText(formatTime(durationMs));
         }
 
         long currentPositionMs = player.getCurrentPositionMs();
@@ -209,11 +226,11 @@ public class MainActivity extends AppCompatActivity {
         }
 
         if (!userSeeking) {
-            binding.currentTimeText.setText(formatTime(currentPositionMs));
+            currentTimeText.setText(formatTime(currentPositionMs));
 
             if (durationMs > 0) {
                 int progress = (int) Math.min(1000L, currentPositionMs * 1000L / durationMs);
-                binding.progressSeekBar.setProgress(progress);
+                progressSeekBar.setProgress(progress);
             }
         }
     }
