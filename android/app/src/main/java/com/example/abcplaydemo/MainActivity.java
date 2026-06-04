@@ -10,6 +10,8 @@ import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.SeekBar;
 import android.widget.TextView;
 
@@ -27,11 +29,15 @@ public class MainActivity extends AppCompatActivity {
 
     private static final String PREFS_NAME = "player_prefs";
     private static final String KEY_LAST_DATA_SOURCE = "last_data_source";
+    private static final String KEY_RTSP_TRANSPORT = "rtsp_transport";
     private static final String DEFAULT_RTSP_SOURCE = "rtsp://192.168.1.1:554/live";
 
     private SurfaceView surfaceView;
     private EditText dataSourceInput;
     private Button openButton;
+    private RadioGroup transportGroup;
+    private RadioButton transportTcpButton;
+    private RadioButton transportUdpButton;
     private Button pauseButton;
     private Button resumeButton;
     private Button stopButton;
@@ -63,6 +69,9 @@ public class MainActivity extends AppCompatActivity {
         surfaceView = findViewById(R.id.surfaceView);
         dataSourceInput = findViewById(R.id.dataSourceInput);
         openButton = findViewById(R.id.openButton);
+        transportGroup = findViewById(R.id.transportGroup);
+        transportTcpButton = findViewById(R.id.transportTcpButton);
+        transportUdpButton = findViewById(R.id.transportUdpButton);
         pauseButton = findViewById(R.id.pauseButton);
         resumeButton = findViewById(R.id.resumeButton);
         stopButton = findViewById(R.id.stopButton);
@@ -177,6 +186,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         persistLastDataSource();
+        persistRtspTransport();
         runPlayDemo(surface, surfaceWidth, surfaceHeight);
     }
 
@@ -211,6 +221,7 @@ public class MainActivity extends AppCompatActivity {
 
             player.setSurface(surface);
             player.setDataSource(dataSource);
+            player.setRtspTransport(resolveRtspTransport());
 
             String prepareInfo = player.prepare();
             text.append(prepareInfo);
@@ -248,6 +259,13 @@ public class MainActivity extends AppCompatActivity {
         String lastDataSource = preferences.getString(KEY_LAST_DATA_SOURCE, DEFAULT_RTSP_SOURCE);
         dataSourceInput.setText(lastDataSource);
         dataSourceInput.setSelection(dataSourceInput.getText().length());
+
+        int transport = preferences.getInt(KEY_RTSP_TRANSPORT, ECHPlayer.RTSP_TRANSPORT_TCP);
+        if (transport == ECHPlayer.RTSP_TRANSPORT_UDP) {
+            transportUdpButton.setChecked(true);
+        } else {
+            transportTcpButton.setChecked(true);
+        }
     }
 
     private void persistLastDataSource() {
@@ -258,6 +276,17 @@ public class MainActivity extends AppCompatActivity {
 
         SharedPreferences preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         preferences.edit().putString(KEY_LAST_DATA_SOURCE, input).apply();
+    }
+
+    private void persistRtspTransport() {
+        SharedPreferences preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        preferences.edit().putInt(KEY_RTSP_TRANSPORT, resolveRtspTransport()).apply();
+    }
+
+    private int resolveRtspTransport() {
+        return transportGroup.getCheckedRadioButtonId() == R.id.transportUdpButton
+                ? ECHPlayer.RTSP_TRANSPORT_UDP
+                : ECHPlayer.RTSP_TRANSPORT_TCP;
     }
 
     private void appendLog(String message) {

@@ -7,6 +7,9 @@ import android.view.Surface;
 
 public class ECHPlayer implements AutoCloseable {
 
+    public static final int RTSP_TRANSPORT_TCP = 0;
+    public static final int RTSP_TRANSPORT_UDP = 1;
+
     static {
         System.loadLibrary("abcplaydemo");
     }
@@ -33,6 +36,11 @@ public class ECHPlayer implements AutoCloseable {
     public synchronized void setSurface(Surface surface) {
         checkReleased();
         nativeSetSurface(nativeHandle, surface);
+    }
+
+    public synchronized void setRtspTransport(int transport) {
+        checkReleased();
+        nativeSetRtspTransport(nativeHandle, transport);
     }
 
     public synchronized String prepare() {
@@ -172,6 +180,8 @@ public class ECHPlayer implements AutoCloseable {
     private native void nativeSetDataSource(long nativeHandle, String dataSource);
 
     private native void nativeSetSurface(long nativeHandle, Surface surface);
+
+    private native void nativeSetRtspTransport(long nativeHandle, int transport);
 
     private native String nativePrepare(long nativeHandle);
 

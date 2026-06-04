@@ -90,6 +90,20 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativeSetSurface(
 }
 
 extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_abcplaydemo_player_ECHPlayer_nativeSetRtspTransport(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle,
+        jint transport) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player != nullptr) {
+        player->setRtspTransport(static_cast<int>(transport));
+    }
+}
+
+extern "C"
 JNIEXPORT jstring JNICALL
 Java_com_example_abcplaydemo_player_ECHPlayer_nativePrepare(
         JNIEnv *env,

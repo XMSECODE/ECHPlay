@@ -52,6 +52,7 @@ NativePlayer::NativePlayer(JavaVM *vm, JNIEnv *env, jobject javaPlayer)
           renderSrcFormat(-1),
           renderDstWidth(0),
           renderDstHeight(0),
+          rtspTransport(0),
           javaVm(vm),
           javaPlayerObject(nullptr),
           onNativeAudioInfoMethod(nullptr),
@@ -120,6 +121,11 @@ void NativePlayer::setSurface(ANativeWindow *window) {
     }
 }
 
+void NativePlayer::setRtspTransport(int transport) {
+    rtspTransport = transport;
+    ECH_LOGI("setRtspTransport: %d", rtspTransport);
+}
+
 std::string NativePlayer::prepare() {
     if (dataSource.empty()) {
         return "prepare failed: dataSource is empty";
@@ -133,7 +139,12 @@ std::string NativePlayer::prepare() {
 
     AVDictionary *options = nullptr;
     if (dataSource.rfind("rtsp://", 0) == 0) {
-        av_dict_set(&options, "rtsp_transport", "tcp", 0);
+        av_dict_set(
+                &options,
+                "rtsp_transport",
+                rtspTransport == 1 ? "udp" : "tcp",
+                0
+        );
         av_dict_set(&options, "timeout", "5000000", 0);
         av_dict_set(&options, "rw_timeout", "5000000", 0);
         av_dict_set(&options, "buffer_size", "1024000", 0);

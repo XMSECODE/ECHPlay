@@ -26,6 +26,8 @@ public:
 
     void setSurface(ANativeWindow *window);
 
+    void setRtspTransport(int transport);
+
     std::string prepare();
 
     std::string play();
@@ -81,6 +83,7 @@ private:
     int renderSrcFormat;
     int renderDstWidth;
     int renderDstHeight;
+    int rtspTransport;
 
     JavaVM *javaVm;
     jobject javaPlayerObject;
