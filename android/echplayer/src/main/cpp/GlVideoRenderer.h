@@ -4,6 +4,7 @@
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 #include <android/native_window.h>
+#include <cstdint>
 #include <string>
 
 /**
@@ -29,6 +30,18 @@ public:
     /** 渲染一帧黑色画面，用于验证 EGL swap 链路。 */
     std::string renderBlackFrame();
 
+    /** 上传并渲染一帧 YUV420P 视频帧。 */
+    std::string renderYuv420PFrame(
+            const uint8_t *yData,
+            int yLineSize,
+            const uint8_t *uData,
+            int uLineSize,
+            const uint8_t *vData,
+            int vLineSize,
+            int frameWidth,
+            int frameHeight
+    );
+
     /** 释放 EGL、shader、纹理和 Surface 相关资源。 */
     void release();
 
@@ -49,7 +62,17 @@ private:
     EGLConfig eglConfig;
     /** OpenGL shader 程序。 */
     GLuint programId;
-    /** YUV 三纹理占位 ID，后续用于上传 Y、U、V 平面。 */
+    /** 顶点坐标属性位置。 */
+    GLint positionLocation;
+    /** 纹理坐标属性位置。 */
+    GLint texCoordLocation;
+    /** Y 纹理 uniform 位置。 */
+    GLint yTextureLocation;
+    /** U 纹理 uniform 位置。 */
+    GLint uTextureLocation;
+    /** V 纹理 uniform 位置。 */
+    GLint vTextureLocation;
+    /** YUV 三纹理 ID，用于上传 Y、U、V 平面。 */
     GLuint textureIds[3];
     /** 当前 Surface 宽度。 */
     int surfaceWidth;
@@ -71,6 +94,15 @@ private:
 
     /** 创建并配置三张 2D 纹理。 */
     bool createTextures();
+
+    /** 上传单个 YUV 平面到指定纹理。 */
+    bool uploadPlane(
+            GLuint textureId,
+            const uint8_t *planeData,
+            int lineSize,
+            int width,
+            int height
+    );
 
     /** 释放 OpenGL 对象资源。 */
     void releaseGlObjects();
