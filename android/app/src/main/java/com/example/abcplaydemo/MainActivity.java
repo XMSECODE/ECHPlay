@@ -67,6 +67,8 @@ public class MainActivity extends AppCompatActivity {
     private EditText dataSourceInput;
     /** 播放按钮。 */
     private Button openButton;
+    /** PlayerView Demo 入口按钮。 */
+    private Button openPlayerViewDemoButton;
     /** RTSP 传输组选框。 */
     private RadioGroup transportGroup;
     /** TCP 选项按钮。 */
@@ -141,6 +143,7 @@ public class MainActivity extends AppCompatActivity {
         surfaceView = findViewById(R.id.surfaceView);
         dataSourceInput = findViewById(R.id.dataSourceInput);
         openButton = findViewById(R.id.openButton);
+        openPlayerViewDemoButton = findViewById(R.id.openPlayerViewDemoButton);
         transportGroup = findViewById(R.id.transportGroup);
         transportTcpButton = findViewById(R.id.transportTcpButton);
         transportUdpButton = findViewById(R.id.transportUdpButton);
@@ -174,6 +177,8 @@ public class MainActivity extends AppCompatActivity {
         });
 
         openButton.setOnClickListener(v -> tryStartPlayback());
+        openPlayerViewDemoButton.setOnClickListener(v ->
+                startActivity(new Intent(this, PlayerViewDemoActivity.class)));
         pickFileButton.setOnClickListener(v -> pickLocalFile());
 
         pauseButton.setOnClickListener(v -> {

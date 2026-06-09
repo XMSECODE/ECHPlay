@@ -71,6 +71,13 @@
                     android:layout_marginStart="8dp"
                     android:text="\u64ad\u653e" />
 
+                <Button
+                    android:id="@+id/openPlayerViewDemoButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="PlayerView" />
+
             </LinearLayout>
 
             <RadioGroup
