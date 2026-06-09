@@ -55,6 +55,36 @@
     </RadioGroup>
 
     <RadioGroup
+        android:id="@+id/playerViewRenderModeGroup"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="8dp"
+        android:orientation="horizontal">
+
+        <RadioButton
+            android:id="@+id/playerViewRenderAutoButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:checked="true"
+            android:text="AUTO" />
+
+        <RadioButton
+            android:id="@+id/playerViewRenderOpenGlButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:text="OpenGL" />
+
+        <RadioButton
+            android:id="@+id/playerViewRenderNativeButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:text="NativeWindow" />
+
+    </RadioGroup>
+
+    <RadioGroup
         android:id="@+id/playerViewScaleGroup"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"

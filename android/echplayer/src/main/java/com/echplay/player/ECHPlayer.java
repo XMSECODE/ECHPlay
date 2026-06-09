@@ -172,16 +172,30 @@ public class ECHPlayer implements AutoCloseable {
     public static final int SURFACE_SCALE_TYPE_FIT_CENTER = 0;
     /** Surface 渲染拉伸填满。 */
     public static final int SURFACE_SCALE_TYPE_FILL = 1;
+    /** 渲染模式：自动选择，优先 OpenGL，失败回退 NativeWindow。 */
+    public static final int RENDER_MODE_AUTO = 0;
+    /** 渲染模式：强制使用 OpenGL。 */
+    public static final int RENDER_MODE_OPENGL = 1;
+    /** 渲染模式：强制使用 NativeWindow。 */
+    public static final int RENDER_MODE_NATIVE_WINDOW = 2;
     /** FFmpeg format 层 option 分类。 */
     public static final int OPTION_CATEGORY_FORMAT = 1;
     /** 播放器自身 option 分类。 */
     public static final int OPTION_CATEGORY_PLAYER = 2;
     /** RTSP 传输方式 option 名称。 */
     public static final String OPTION_RTSP_TRANSPORT = "rtsp_transport";
+    /** 渲染模式 option 名称。 */
+    public static final String OPTION_RENDER_MODE = "render_mode";
     /** RTSP TCP option 值。 */
     public static final String OPTION_VALUE_TCP = "tcp";
     /** RTSP UDP option 值。 */
     public static final String OPTION_VALUE_UDP = "udp";
+    /** 渲染模式 AUTO option 值。 */
+    public static final String OPTION_VALUE_RENDER_AUTO = "auto";
+    /** 渲染模式 OPENGL option 值。 */
+    public static final String OPTION_VALUE_RENDER_OPENGL = "opengl";
+    /** 渲染模式 NativeWindow option 值。 */
+    public static final String OPTION_VALUE_RENDER_NATIVE_WINDOW = "native_window";
     /** 打开输入超时时间 option 名称，单位微秒。 */
     public static final String OPTION_TIMEOUT = "timeout";
     /** 网络读取超时时间 option 名称，单位微秒。 */
@@ -213,6 +227,8 @@ public class ECHPlayer implements AutoCloseable {
     private String lastStartResult = "";
     /** 当前 RTSP 传输方式。 */
     private int rtspTransport = RTSP_TRANSPORT_TCP;
+    /** 当前渲染模式。 */
+    private int renderMode = RENDER_MODE_AUTO;
     /** prepare 完成监听器。 */
     private OnPreparedListener onPreparedListener;
     /** 播放完成监听器。 */
@@ -313,6 +329,18 @@ public class ECHPlayer implements AutoCloseable {
         nativeSetSurfaceScaleType(nativeHandle, nativeScaleType);
     }
 
+    /** 设置渲染模式。 */
+    public synchronized void setRenderMode(int renderMode) {
+        checkReleased();
+        this.renderMode = normalizeRenderMode(renderMode);
+        nativeSetRenderMode(nativeHandle, this.renderMode);
+    }
+
+    /** 返回当前渲染模式。 */
+    public synchronized int getRenderMode() {
+        return renderMode;
+    }
+
     /** 设置 RTSP 传输方式。 */
     public synchronized void setRtspTransport(int transport) {
         checkReleased();
@@ -330,6 +358,10 @@ public class ECHPlayer implements AutoCloseable {
             setRtspTransport(value == RTSP_TRANSPORT_UDP ? RTSP_TRANSPORT_UDP : RTSP_TRANSPORT_TCP);
             return true;
         }
+        if (OPTION_RENDER_MODE.equals(name)) {
+            setRenderMode((int) value);
+            return true;
+        }
 
         return nativeSetLongOption(nativeHandle, category, name, value);
     }
@@ -343,6 +375,17 @@ public class ECHPlayer implements AutoCloseable {
                 setRtspTransport(RTSP_TRANSPORT_UDP);
             } else {
                 setRtspTransport(RTSP_TRANSPORT_TCP);
+            }
+            return true;
+        }
+        if (OPTION_RENDER_MODE.equals(name)) {
+            if (OPTION_VALUE_RENDER_OPENGL.equalsIgnoreCase(value)) {
+                setRenderMode(RENDER_MODE_OPENGL);
+            } else if (OPTION_VALUE_RENDER_NATIVE_WINDOW.equalsIgnoreCase(value)
+                    || "nativewindow".equalsIgnoreCase(value)) {
+                setRenderMode(RENDER_MODE_NATIVE_WINDOW);
+            } else {
+                setRenderMode(RENDER_MODE_AUTO);
             }
             return true;
         }
@@ -510,6 +553,7 @@ public class ECHPlayer implements AutoCloseable {
         lastPrepareResult = "";
         lastStartResult = "";
         rtspTransport = RTSP_TRANSPORT_TCP;
+        renderMode = RENDER_MODE_AUTO;
         recordingState = RecordingState.IDLE;
         lastRecordingPath = "";
         resetVideoSize();
@@ -972,6 +1016,15 @@ public class ECHPlayer implements AutoCloseable {
         videoHeight = 0;
     }
 
+    /** 规范化外部传入的渲染模式。 */
+    private int normalizeRenderMode(int requestedRenderMode) {
+        if (requestedRenderMode == RENDER_MODE_OPENGL
+                || requestedRenderMode == RENDER_MODE_NATIVE_WINDOW) {
+            return requestedRenderMode;
+        }
+        return RENDER_MODE_AUTO;
+    }
+
     /** 在首帧解码后分发视频渲染开始事件。 */
     private void dispatchVideoRenderingStartIfReady() {
         if (videoRenderingStarted || state != State.STARTED) {
@@ -1048,6 +1101,9 @@ public class ECHPlayer implements AutoCloseable {
 
     /** 设置 NativePlayer 的 Surface 缩放方式。 */
     private native void nativeSetSurfaceScaleType(long nativeHandle, int scaleType);
+
+    /** 设置 NativePlayer 的渲染模式。 */
+    private native void nativeSetRenderMode(long nativeHandle, int renderMode);
 
     /** 设置 NativePlayer 的 RTSP 传输方式。 */
     private native void nativeSetRtspTransport(long nativeHandle, int transport);

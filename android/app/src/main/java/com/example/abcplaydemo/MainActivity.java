@@ -75,6 +75,14 @@ public class MainActivity extends AppCompatActivity {
     private RadioButton transportTcpButton;
     /** UDP 选项按钮。 */
     private RadioButton transportUdpButton;
+    /** 渲染模式组选框。 */
+    private RadioGroup renderModeGroup;
+    /** 自动渲染模式按钮。 */
+    private RadioButton renderModeAutoButton;
+    /** OpenGL 渲染模式按钮。 */
+    private RadioButton renderModeOpenGlButton;
+    /** NativeWindow 渲染模式按钮。 */
+    private RadioButton renderModeNativeButton;
     /** 播放模式组选框。 */
     private RadioGroup modeGroup;
     /** RTSP 模式按钮。 */
@@ -147,6 +155,10 @@ public class MainActivity extends AppCompatActivity {
         transportGroup = findViewById(R.id.transportGroup);
         transportTcpButton = findViewById(R.id.transportTcpButton);
         transportUdpButton = findViewById(R.id.transportUdpButton);
+        renderModeGroup = findViewById(R.id.renderModeGroup);
+        renderModeAutoButton = findViewById(R.id.renderModeAutoButton);
+        renderModeOpenGlButton = findViewById(R.id.renderModeOpenGlButton);
+        renderModeNativeButton = findViewById(R.id.renderModeNativeButton);
         modeGroup = findViewById(R.id.modeGroup);
         modeRtspButton = findViewById(R.id.modeRtspButton);
         modeLocalButton = findViewById(R.id.modeLocalButton);
@@ -174,6 +186,12 @@ public class MainActivity extends AppCompatActivity {
         modeGroup.setOnCheckedChangeListener((group, checkedId) -> {
             persistPlayMode();
             updateModeUi();
+        });
+        renderModeGroup.setOnCheckedChangeListener((group, checkedId) -> {
+            if (player != null) {
+                player.setRenderMode(resolveRenderMode());
+                appendLog("renderMode: " + renderModeToText(player.getRenderMode()));
+            }
         });
 
         openButton.setOnClickListener(v -> tryStartPlayback());
@@ -341,6 +359,9 @@ public class MainActivity extends AppCompatActivity {
         text.append("FFmpeg version: ");
         text.append(player.getFFmpegVersion());
         text.append("\n\n");
+        text.append("Render mode: ");
+        text.append(renderModeToText(resolveRenderMode()));
+        text.append("\n\n");
         sampleText.setText(text.toString());
 
         int playMode = modeGroup.getCheckedRadioButtonId() == R.id.modeLocalButton ? MODE_LOCAL : MODE_RTSP;
@@ -348,6 +369,7 @@ public class MainActivity extends AppCompatActivity {
             String dataSource = resolveDataSource();
 
             player.setSurface(surface);
+            player.setRenderMode(resolveRenderMode());
             player.setDataSource(dataSource);
 
             if (playMode == MODE_RTSP) {
@@ -362,7 +384,9 @@ public class MainActivity extends AppCompatActivity {
             updateSeekableUi();
 
             String playInfo = player.start();
-            appendLog(playInfo + "\nstate: " + player.getState());
+            appendLog(playInfo
+                    + "\nrenderMode: " + renderModeToText(player.getRenderMode())
+                    + "\nstate: " + player.getState());
             startProgressUpdates();
             updateRecordButtonState();
 
@@ -430,6 +454,29 @@ public class MainActivity extends AppCompatActivity {
         targetPlayer.setOption(ECHPlayer.OPTION_CATEGORY_FORMAT, ECHPlayer.OPTION_RW_TIMEOUT, 5_000_000L);
         targetPlayer.setOption(ECHPlayer.OPTION_CATEGORY_FORMAT, ECHPlayer.OPTION_BUFFER_SIZE, 1_024_000L);
         targetPlayer.setOption(ECHPlayer.OPTION_CATEGORY_FORMAT, ECHPlayer.OPTION_MAX_DELAY, 500_000L);
+    }
+
+    /** 根据单选框解析当前渲染模式。 */
+    private int resolveRenderMode() {
+        int checkedId = renderModeGroup.getCheckedRadioButtonId();
+        if (checkedId == R.id.renderModeOpenGlButton) {
+            return ECHPlayer.RENDER_MODE_OPENGL;
+        }
+        if (checkedId == R.id.renderModeNativeButton) {
+            return ECHPlayer.RENDER_MODE_NATIVE_WINDOW;
+        }
+        return ECHPlayer.RENDER_MODE_AUTO;
+    }
+
+    /** 把渲染模式转换成日志文本。 */
+    private String renderModeToText(int renderMode) {
+        if (renderMode == ECHPlayer.RENDER_MODE_OPENGL) {
+            return "OpenGL";
+        }
+        if (renderMode == ECHPlayer.RENDER_MODE_NATIVE_WINDOW) {
+            return "NativeWindow";
+        }
+        return "AUTO";
     }
 
     /** 把任务安全切回主线程执行。 */

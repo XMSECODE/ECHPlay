@@ -22,6 +22,8 @@ public class PlayerViewDemoActivity extends AppCompatActivity {
     private EditText urlInput;
     /** RTSP 传输方式组选框。 */
     private RadioGroup transportGroup;
+    /** 渲染模式组选框。 */
+    private RadioGroup renderModeGroup;
     /** 画面比例模式组选框。 */
     private RadioGroup scaleTypeGroup;
     /** 日志文本。 */
@@ -35,6 +37,7 @@ public class PlayerViewDemoActivity extends AppCompatActivity {
         playerView = findViewById(R.id.playerView);
         urlInput = findViewById(R.id.playerViewUrlInput);
         transportGroup = findViewById(R.id.playerViewTransportGroup);
+        renderModeGroup = findViewById(R.id.playerViewRenderModeGroup);
         scaleTypeGroup = findViewById(R.id.playerViewScaleGroup);
         logText = findViewById(R.id.playerViewLogText);
         Button setPathButton = findViewById(R.id.playerViewSetPathButton);
@@ -42,8 +45,10 @@ public class PlayerViewDemoActivity extends AppCompatActivity {
         playerView.setEventListener(this::appendLog);
         setPathButton.setOnClickListener(view -> applyPlayerViewSource());
         transportGroup.setOnCheckedChangeListener((group, checkedId) -> applyRtspTransport());
+        renderModeGroup.setOnCheckedChangeListener((group, checkedId) -> applyRenderMode());
         scaleTypeGroup.setOnCheckedChangeListener((group, checkedId) -> applyScaleType());
 
+        applyRenderMode();
         applyScaleType();
         applyPlayerViewSource();
     }
@@ -62,6 +67,24 @@ public class PlayerViewDemoActivity extends AppCompatActivity {
                 ? ECHPlayer.RTSP_TRANSPORT_UDP
                 : ECHPlayer.RTSP_TRANSPORT_TCP;
         playerView.setRtspTransport(transport);
+    }
+
+    /** 应用当前渲染模式。 */
+    private void applyRenderMode() {
+        int checkedId = renderModeGroup.getCheckedRadioButtonId();
+        int renderMode = ECHPlayer.RENDER_MODE_AUTO;
+        String renderModeText = "AUTO";
+
+        if (checkedId == R.id.playerViewRenderOpenGlButton) {
+            renderMode = ECHPlayer.RENDER_MODE_OPENGL;
+            renderModeText = "OpenGL";
+        } else if (checkedId == R.id.playerViewRenderNativeButton) {
+            renderMode = ECHPlayer.RENDER_MODE_NATIVE_WINDOW;
+            renderModeText = "NativeWindow";
+        }
+
+        playerView.setRenderMode(renderMode);
+        appendLog("renderMode: " + renderModeText);
     }
 
     /** 应用当前画面比例模式。 */

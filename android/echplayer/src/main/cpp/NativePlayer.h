@@ -38,6 +38,9 @@ public:
     /** 设置 Surface 渲染缩放方式，0 保持比例居中，1 拉伸填满。 */
     void setSurfaceScaleType(int scaleType);
 
+    /** 设置渲染模式，0 自动，1 OpenGL，2 NativeWindow。 */
+    void setRenderMode(int renderMode);
+
     /** 设置 RTSP 传输方式，0 为 TCP，1 为 UDP。 */
     void setRtspTransport(int transport);
 
@@ -131,6 +134,8 @@ private:
     std::atomic<int64_t> audioClockUs;
     /** Surface 渲染缩放方式，0 保持比例居中，1 拉伸填满。 */
     std::atomic<int> surfaceScaleType;
+    /** 当前渲染模式，0 自动，1 OpenGL，2 NativeWindow。 */
+    std::atomic<int> renderMode;
     /** OpenGL ES 视频渲染器。 */
     GlVideoRenderer glVideoRenderer;
     /** OpenGL 渲染器互斥锁，避免 Surface 释放和渲染并发访问 EGL。 */

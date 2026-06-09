@@ -52,6 +52,7 @@ NativePlayer::NativePlayer(JavaVM *vm, JNIEnv *env, jobject javaPlayer)
           activePlaybackWorkers(0),
           audioClockUs(std::numeric_limits<int64_t>::min()),
           surfaceScaleType(0),
+          renderMode(0),
           glVideoRenderer(),
           glRenderFailed(false),
           swsContextCache(nullptr),
@@ -184,6 +185,18 @@ void NativePlayer::setSurface(ANativeWindow *window) {
 void NativePlayer::setSurfaceScaleType(int scaleType) {
     surfaceScaleType = scaleType == 1 ? 1 : 0;
     ECH_LOGI("setSurfaceScaleType: %d", surfaceScaleType.load());
+}
+
+/** 设置渲染模式，0 自动，1 OpenGL，2 NativeWindow。 */
+void NativePlayer::setRenderMode(int mode) {
+    renderMode = (mode == 1 || mode == 2) ? mode : 0;
+    if (renderMode.load() != 2) {
+        glRenderFailed = false;
+    } else {
+        std::lock_guard<std::mutex> glLock(glRendererMutex);
+        glVideoRenderer.release();
+    }
+    ECH_LOGI("setRenderMode: %d", renderMode.load());
 }
 
 /** 设置 RTSP 传输方式，0 为 TCP，1 为 UDP。 */
@@ -1030,6 +1043,11 @@ bool NativePlayer::tryRenderFrameWithOpenGL(ANativeWindow *window, AVFrame *fram
         return false;
     }
 
+    int currentRenderMode = renderMode.load();
+    if (currentRenderMode == 2) {
+        return false;
+    }
+
     if (frame->format != AV_PIX_FMT_YUV420P) {
         return false;
     }
@@ -1071,6 +1089,9 @@ bool NativePlayer::tryRenderFrameWithOpenGL(ANativeWindow *window, AVFrame *fram
     ECH_LOGE("OpenGL YUV render failed: %s", renderResult.c_str());
     glVideoRenderer.release();
     glRenderFailed = true;
+    if (currentRenderMode == 1) {
+        ECH_LOGE("OpenGL mode fallback to NativeWindow");
+    }
     return false;
 }
 

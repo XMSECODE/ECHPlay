@@ -62,6 +62,8 @@ public class ECHPlayerView extends LinearLayout {
     private EventListener eventListener;
     /** 当前画面比例模式。 */
     private int scaleType = SCALE_TYPE_FIT_CENTER;
+    /** 当前渲染模式。 */
+    private int renderMode = ECHPlayer.RENDER_MODE_AUTO;
     /** 当前视频宽度。 */
     private int videoWidth = 0;
     /** 当前视频高度。 */
@@ -137,6 +139,18 @@ public class ECHPlayerView extends LinearLayout {
         return scaleType;
     }
 
+    /** 设置渲染模式。 */
+    public void setRenderMode(int renderMode) {
+        this.renderMode = normalizeRenderMode(renderMode);
+        applyRenderModeToPlayer();
+        emitEvent("PlayerView renderMode: " + renderModeToText(this.renderMode));
+    }
+
+    /** 返回当前渲染模式。 */
+    public int getRenderMode() {
+        return renderMode;
+    }
+
     /** 设置播放地址。 */
     public void setVideoPath(String path) {
         videoPath = path == null ? "" : path.trim();
@@ -151,6 +165,7 @@ public class ECHPlayerView extends LinearLayout {
             player.reset();
         }
         resetVideoSize();
+        applyRenderModeToPlayer();
 
         try {
             player.setDataSource(videoPath);
@@ -179,6 +194,7 @@ public class ECHPlayerView extends LinearLayout {
         }
 
         applySurfaceScaleTypeToPlayer();
+        applyRenderModeToPlayer();
         player.setSurface(currentSurface);
         if (!player.isPrepared()) {
             String prepareResult = player.prepare();
@@ -323,8 +339,22 @@ public class ECHPlayerView extends LinearLayout {
             emitEvent("PlayerView video size: " + width + "x" + height);
         });
         applySurfaceScaleTypeToPlayer();
+        applyRenderModeToPlayer();
         if (surfaceReady && currentSurface != null && currentSurface.isValid()) {
             player.setSurface(currentSurface);
+        }
+    }
+
+    /** 把当前渲染模式应用到播放器。 */
+    private void applyRenderModeToPlayer() {
+        if (player == null || player.isReleased()) {
+            return;
+        }
+
+        try {
+            player.setRenderMode(renderMode);
+        } catch (IllegalStateException e) {
+            emitEvent("PlayerView renderMode ignored: " + e.getMessage());
         }
     }
 
@@ -435,6 +465,15 @@ public class ECHPlayerView extends LinearLayout {
         return SCALE_TYPE_FIT_CENTER;
     }
 
+    /** 规范化外部传入的渲染模式。 */
+    private int normalizeRenderMode(int requestedRenderMode) {
+        if (requestedRenderMode == ECHPlayer.RENDER_MODE_OPENGL
+                || requestedRenderMode == ECHPlayer.RENDER_MODE_NATIVE_WINDOW) {
+            return requestedRenderMode;
+        }
+        return ECHPlayer.RENDER_MODE_AUTO;
+    }
+
     /** 把比例模式转成易读文本。 */
     private String scaleTypeToText(int value) {
         if (value == SCALE_TYPE_CENTER_CROP) {
@@ -447,6 +486,17 @@ public class ECHPlayerView extends LinearLayout {
             return "original";
         }
         return "fitCenter";
+    }
+
+    /** 把渲染模式转成易读文本。 */
+    private String renderModeToText(int value) {
+        if (value == ECHPlayer.RENDER_MODE_OPENGL) {
+            return "opengl";
+        }
+        if (value == ECHPlayer.RENDER_MODE_NATIVE_WINDOW) {
+            return "nativeWindow";
+        }
+        return "auto";
     }
 
     /** 保存当前解码帧截图。 */
