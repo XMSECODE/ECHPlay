@@ -8,8 +8,8 @@ import android.widget.TextView;
 
 import androidx.appcompat.app.AppCompatActivity;
 
-import com.example.abcplaydemo.player.ECHPlayer;
-import com.example.abcplaydemo.player.ECHPlayerView;
+import com.echplay.player.ECHPlayer;
+import com.echplay.player.ECHPlayerView;
 
 /**
  * PlayerView 最小 Demo 页面，只通过 ECHPlayerView 完成播放控制。

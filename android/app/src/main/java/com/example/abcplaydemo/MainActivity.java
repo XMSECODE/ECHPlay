@@ -23,7 +23,7 @@ import android.widget.TextView;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 
-import com.example.abcplaydemo.player.ECHPlayer;
+import com.echplay.player.ECHPlayer;
 
 import java.io.File;
 import java.io.FileOutputStream;

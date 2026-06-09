@@ -1,4 +1,4 @@
-package com.example.abcplaydemo.player;
+package com.echplay.player;
 
 import android.graphics.Bitmap;
 import android.media.AudioFormat;

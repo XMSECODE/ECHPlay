@@ -1,4 +1,4 @@
-package com.example.abcplaydemo.player;
+package com.echplay.player;
 
 import android.content.Context;
 import android.os.Environment;
@@ -9,8 +9,6 @@ import android.view.SurfaceView;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.LinearLayout;
-
-import androidx.annotation.NonNull;
 
 import java.io.File;
 import java.text.SimpleDateFormat;
@@ -209,7 +207,7 @@ public class ECHPlayerView extends LinearLayout {
     private void bindSurfaceCallback() {
         surfaceView.getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override
-            public void surfaceCreated(@NonNull SurfaceHolder holder) {
+            public void surfaceCreated(SurfaceHolder holder) {
                 currentSurface = holder.getSurface();
                 surfaceReady = currentSurface != null && currentSurface.isValid();
                 if (player != null && surfaceReady) {
@@ -220,7 +218,7 @@ public class ECHPlayerView extends LinearLayout {
 
             @Override
             public void surfaceChanged(
-                    @NonNull SurfaceHolder holder,
+                    SurfaceHolder holder,
                     int format,
                     int width,
                     int height) {
@@ -229,7 +227,7 @@ public class ECHPlayerView extends LinearLayout {
             }
 
             @Override
-            public void surfaceDestroyed(@NonNull SurfaceHolder holder) {
+            public void surfaceDestroyed(SurfaceHolder holder) {
                 surfaceReady = false;
                 currentSurface = null;
                 if (player != null) {
