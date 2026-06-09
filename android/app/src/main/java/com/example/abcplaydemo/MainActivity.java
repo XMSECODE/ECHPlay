@@ -178,14 +178,22 @@ public class MainActivity extends AppCompatActivity {
 
         pauseButton.setOnClickListener(v -> {
             if (player != null) {
-                player.pause();
-                appendLog("pause");
+                try {
+                    player.pause();
+                    appendLog("pause\nstate: " + player.getState());
+                } catch (IllegalStateException e) {
+                    appendLog("pause ignored: " + e.getMessage());
+                }
             }
         });
 
         resumeButton.setOnClickListener(v -> {
             if (player != null) {
-                appendLog(player.start());
+                try {
+                    appendLog(player.start() + "\nstate: " + player.getState());
+                } catch (IllegalStateException e) {
+                    appendLog("start ignored: " + e.getMessage());
+                }
             }
         });
 
@@ -224,9 +232,13 @@ public class MainActivity extends AppCompatActivity {
 
                 if (player != null && durationMs > 0) {
                     long targetPositionMs = durationMs * seekBar.getProgress() / 1000L;
-                    String seekInfo = player.seekTo(targetPositionMs);
-                    appendLog(seekInfo);
-                    updateProgressUi();
+                    try {
+                        String seekInfo = player.seekTo(targetPositionMs);
+                        appendLog(seekInfo + "\nstate: " + player.getState());
+                        updateProgressUi();
+                    } catch (IllegalStateException e) {
+                        appendLog("seek ignored: " + e.getMessage());
+                    }
                 }
             }
         });
@@ -341,6 +353,8 @@ public class MainActivity extends AppCompatActivity {
 
             String playInfo = player.start();
             text.append(playInfo);
+            text.append("\nstate: ");
+            text.append(player.getState());
             startProgressUpdates();
             updateRecordButtonState();
 

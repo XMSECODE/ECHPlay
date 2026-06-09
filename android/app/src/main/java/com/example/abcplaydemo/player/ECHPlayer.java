@@ -10,6 +10,32 @@ import android.view.Surface;
  */
 public class ECHPlayer implements AutoCloseable {
 
+    /**
+     * 播放器状态机，命名对齐 Android MediaPlayer 的常见生命周期。
+     */
+    public enum State {
+        /** 初始状态，可设置数据源。 */
+        IDLE,
+        /** 已设置数据源。 */
+        INITIALIZED,
+        /** 正在 prepare。 */
+        PREPARING,
+        /** 已 prepare 成功。 */
+        PREPARED,
+        /** 播放中。 */
+        STARTED,
+        /** 暂停中。 */
+        PAUSED,
+        /** 已停止。 */
+        STOPPED,
+        /** 播放完成。 */
+        COMPLETED,
+        /** 出错。 */
+        ERROR,
+        /** 已释放。 */
+        RELEASED
+    }
+
     /** RTSP 走 TCP 传输。 */
     public static final int RTSP_TRANSPORT_TCP = 0;
     /** RTSP 走 UDP 传输。 */
@@ -33,6 +59,8 @@ public class ECHPlayer implements AutoCloseable {
     private long nativeHandle = 0;
     /** 当前对象是否已经释放。 */
     private boolean released = false;
+    /** 当前播放器状态。 */
+    private State state = State.IDLE;
     /** 当前是否已经 prepare 成功。 */
     private boolean prepared = false;
     /** 当前是否处于播放中。 */
@@ -57,12 +85,14 @@ public class ECHPlayer implements AutoCloseable {
     /** 设置播放数据源。 */
     public synchronized void setDataSource(String dataSource) {
         checkReleased();
+        requireState(State.IDLE, State.STOPPED, State.ERROR);
 
         if (dataSource == null || dataSource.length() == 0) {
             throw new IllegalArgumentException("dataSource is empty");
         }
 
         nativeSetDataSource(nativeHandle, dataSource);
+        state = State.INITIALIZED;
         prepared = false;
         playing = false;
         paused = false;
@@ -114,21 +144,31 @@ public class ECHPlayer implements AutoCloseable {
     /** 打开数据源并读取流信息。 */
     public synchronized String prepare() {
         checkReleased();
+        requireState(State.INITIALIZED, State.STOPPED);
+        state = State.PREPARING;
         lastPrepareResult = nativePrepare(nativeHandle);
         prepared = lastPrepareResult != null && lastPrepareResult.startsWith("prepare success");
         playing = false;
         paused = false;
+        state = prepared ? State.PREPARED : State.ERROR;
         return lastPrepareResult;
     }
 
     /** 异步打开数据源并读取流信息。 */
     public synchronized void prepareAsync() {
         checkReleased();
+        requireState(State.INITIALIZED, State.STOPPED);
+        state = State.PREPARING;
 
         Thread prepareThread = new Thread(() -> {
             synchronized (ECHPlayer.this) {
                 if (!released && nativeHandle != 0) {
-                    prepare();
+                    lastPrepareResult = nativePrepare(nativeHandle);
+                    prepared = lastPrepareResult != null
+                            && lastPrepareResult.startsWith("prepare success");
+                    playing = false;
+                    paused = false;
+                    state = prepared ? State.PREPARED : State.ERROR;
                 }
             }
         }, "ECHPlayer-Prepare");
@@ -143,6 +183,7 @@ public class ECHPlayer implements AutoCloseable {
     /** 按标准播放器命名启动或恢复播放。 */
     public synchronized String start() {
         checkReleased();
+        requireState(State.PREPARED, State.STARTED, State.PAUSED);
 
         if (paused) {
             resume();
@@ -156,6 +197,9 @@ public class ECHPlayer implements AutoCloseable {
                 || lastStartResult.startsWith("play ignored"))) {
             playing = true;
             paused = false;
+            state = State.STARTED;
+        } else {
+            state = State.ERROR;
         }
         return lastStartResult;
     }
@@ -163,6 +207,7 @@ public class ECHPlayer implements AutoCloseable {
     /** 暂停播放。 */
     public synchronized void pause() {
         if (!released && nativeHandle != 0) {
+            requireState(State.STARTED, State.PAUSED);
             nativePause(nativeHandle);
 
             if (audioTrack != null) {
@@ -171,12 +216,14 @@ public class ECHPlayer implements AutoCloseable {
 
             playing = false;
             paused = true;
+            state = State.PAUSED;
         }
     }
 
     /** 恢复播放。 */
     public synchronized void resume() {
         if (!released && nativeHandle != 0) {
+            requireState(State.PAUSED, State.STARTED);
             if (audioTrack != null) {
                 audioTrack.play();
             }
@@ -184,17 +231,22 @@ public class ECHPlayer implements AutoCloseable {
             nativeResume(nativeHandle);
             playing = true;
             paused = false;
+            state = State.STARTED;
         }
     }
 
     /** 停止播放。 */
     public synchronized void stop() {
         if (!released && nativeHandle != 0) {
+            if (state == State.IDLE || state == State.RELEASED) {
+                return;
+            }
             nativeStop(nativeHandle);
             releaseAudioTrack();
             prepared = false;
             playing = false;
             paused = false;
+            state = State.STOPPED;
         }
     }
 
@@ -212,6 +264,7 @@ public class ECHPlayer implements AutoCloseable {
         lastPrepareResult = "";
         lastStartResult = "";
         rtspTransport = RTSP_TRANSPORT_TCP;
+        state = State.IDLE;
     }
 
     /** 跳转到指定毫秒位置。 */
@@ -222,6 +275,7 @@ public class ECHPlayer implements AutoCloseable {
     /** 按标准播放器命名跳转到指定毫秒位置。 */
     public synchronized String seekTo(long positionMs) {
         checkReleased();
+        requireState(State.PREPARED, State.STARTED, State.PAUSED, State.COMPLETED);
         return nativeSeekToMs(nativeHandle, positionMs);
     }
 
@@ -260,6 +314,11 @@ public class ECHPlayer implements AutoCloseable {
     /** 返回当前播放器是否已经释放。 */
     public synchronized boolean isReleased() {
         return released;
+    }
+
+    /** 返回当前播放器状态。 */
+    public synchronized State getState() {
+        return state;
     }
 
     /** 获取最近一次 prepare 返回信息。 */
@@ -317,6 +376,7 @@ public class ECHPlayer implements AutoCloseable {
             prepared = false;
             playing = false;
             paused = false;
+            state = State.RELEASED;
 
             releaseAudioTrack();
         }
@@ -387,6 +447,17 @@ public class ECHPlayer implements AutoCloseable {
         if (released || nativeHandle == 0) {
             throw new IllegalStateException("ECHPlayer has been released");
         }
+    }
+
+    /** 检查当前状态是否允许执行操作。 */
+    private void requireState(State... allowedStates) {
+        for (State allowedState : allowedStates) {
+            if (state == allowedState) {
+                return;
+            }
+        }
+
+        throw new IllegalStateException("Invalid player state: " + state);
     }
 
     /** 创建 NativePlayer 并返回指针。 */
