@@ -231,6 +231,12 @@ public class MainActivity extends AppCompatActivity {
                 userSeeking = false;
 
                 if (player != null && durationMs > 0) {
+                    if (!player.isSeekable()) {
+                        appendLog("seek ignored: 当前媒体不支持 seek");
+                        progressSeekBar.setProgress(0);
+                        currentTimeText.setText(formatTime(0));
+                        return;
+                    }
                     long targetPositionMs = durationMs * seekBar.getProgress() / 1000L;
                     try {
                         String seekInfo = player.seekTo(targetPositionMs);
@@ -345,12 +351,14 @@ public class MainActivity extends AppCompatActivity {
 
             if (playMode == MODE_RTSP) {
                 player.setRtspTransport(resolveRtspTransport());
+                applyRtspNetworkOptions(player);
             }
 
             String prepareInfo = player.prepare();
             appendLog(prepareInfo);
             durationMs = Math.max(0, player.getDuration());
             durationTimeText.setText(formatTime(durationMs));
+            updateSeekableUi();
 
             String playInfo = player.start();
             appendLog(playInfo + "\nstate: " + player.getState());
@@ -408,6 +416,14 @@ public class MainActivity extends AppCompatActivity {
                 postToUi(() -> appendLog("缓冲进度: " + percent + "%")));
     }
 
+    /** 应用 RTSP 网络播放参数。 */
+    private void applyRtspNetworkOptions(ECHPlayer targetPlayer) {
+        targetPlayer.setOption(ECHPlayer.OPTION_CATEGORY_FORMAT, ECHPlayer.OPTION_TIMEOUT, 5_000_000L);
+        targetPlayer.setOption(ECHPlayer.OPTION_CATEGORY_FORMAT, ECHPlayer.OPTION_RW_TIMEOUT, 5_000_000L);
+        targetPlayer.setOption(ECHPlayer.OPTION_CATEGORY_FORMAT, ECHPlayer.OPTION_BUFFER_SIZE, 1_024_000L);
+        targetPlayer.setOption(ECHPlayer.OPTION_CATEGORY_FORMAT, ECHPlayer.OPTION_MAX_DELAY, 500_000L);
+    }
+
     /** 把任务安全切回主线程执行。 */
     private void postToUi(Runnable action) {
         if (Looper.myLooper() == Looper.getMainLooper()) {
@@ -438,6 +454,8 @@ public class MainActivity extends AppCompatActivity {
                 return "录制失败";
             case ECHPlayer.ERROR_INVALID_STATE:
                 return "播放器状态不允许当前操作";
+            case ECHPlayer.ERROR_STREAM_NOT_SEEKABLE:
+                return "当前媒体不支持 seek";
             default:
                 return "未知错误";
         }
@@ -611,6 +629,16 @@ public class MainActivity extends AppCompatActivity {
         }
 
         updateRecordButtonState();
+        updateSeekableUi();
+    }
+
+    /** 根据当前媒体能力更新 seek 进度条状态。 */
+    private void updateSeekableUi() {
+        boolean seekable = player != null && durationMs > 0 && player.isSeekable();
+        progressSeekBar.setEnabled(seekable);
+        if (!seekable) {
+            progressSeekBar.setProgress(0);
+        }
     }
 
     /** 更新录制按钮的显示文本。 */

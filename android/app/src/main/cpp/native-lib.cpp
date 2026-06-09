@@ -105,6 +105,36 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativeSetRtspTransport(
 }
 
 extern "C"
+JNIEXPORT jboolean JNICALL
+Java_com_example_abcplaydemo_player_ECHPlayer_nativeSetLongOption(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle,
+        jint category,
+        jstring name,
+        jlong value) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr || name == nullptr) {
+        return JNI_FALSE;
+    }
+
+    const char *nameChars = env->GetStringUTFChars(name, nullptr);
+    if (nameChars == nullptr) {
+        return JNI_FALSE;
+    }
+
+    bool handled = player->setLongOption(
+            static_cast<int>(category),
+            nameChars,
+            static_cast<int64_t>(value)
+    );
+
+    env->ReleaseStringUTFChars(name, nameChars);
+    return handled ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C"
 JNIEXPORT jstring JNICALL
 Java_com_example_abcplaydemo_player_ECHPlayer_nativePrepare(
         JNIEnv *env,
@@ -220,6 +250,21 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativeGetCurrentPositionMs(
     }
 
     return static_cast<jlong>(player->getCurrentPositionMs());
+}
+
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_com_example_abcplaydemo_player_ECHPlayer_nativeIsSeekable(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return JNI_FALSE;
+    }
+
+    return player->isSeekable() ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C"

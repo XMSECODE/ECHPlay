@@ -36,6 +36,9 @@ public:
     /** 设置 RTSP 传输方式，0 为 TCP，1 为 UDP。 */
     void setRtspTransport(int transport);
 
+    /** 设置 long 类型播放器选项。 */
+    bool setLongOption(int category, const std::string &name, int64_t value);
+
     /** 打开数据源并读取流信息。 */
     std::string prepare();
 
@@ -75,6 +78,9 @@ public:
 
     /** 返回当前是否正在录制。 */
     bool isRecording();
+
+    /** 返回当前媒体是否支持 seek。 */
+    bool isSeekable();
 
     /** 获取 FFmpeg 版本字符串。 */
     std::string getFFmpegVersion();
@@ -167,6 +173,18 @@ private:
     int captureSrcFormat;
     /** RTSP 传输方式，0 为 TCP，1 为 UDP。 */
     int rtspTransport;
+    /** 打开输入超时时间，单位微秒。 */
+    int64_t openTimeoutUs;
+    /** 网络读取超时时间，单位微秒。 */
+    int64_t readWriteTimeoutUs;
+    /** 网络输入缓冲大小，单位字节。 */
+    int64_t inputBufferSize;
+    /** RTSP 最大延迟，单位微秒。 */
+    int64_t maxDelayUs;
+    /** 当前媒体是否支持 seek。 */
+    bool seekable;
+    /** 当前是否处于缓冲状态。 */
+    std::atomic<bool> buffering;
 
     /** JavaVM 指针，用于子线程回调 Java。 */
     JavaVM *javaVm;
@@ -176,6 +194,10 @@ private:
     jmethodID onNativeAudioInfoMethod;
     /** PCM 数据回调方法。 */
     jmethodID onNativeAudioDataMethod;
+    /** Native 信息事件回调方法。 */
+    jmethodID onNativeInfoMethod;
+    /** Native 错误事件回调方法。 */
+    jmethodID onNativeErrorMethod;
 
     /** 录制输出上下文。 */
     AVFormatContext *recordFormatContext;
@@ -267,6 +289,15 @@ private:
 
     /** 回调 Java 写入 PCM 音频数据。 */
     void notifyAudioData(uint8_t *data, int size);
+
+    /** 回调 Java 播放器信息事件。 */
+    void notifyInfo(int infoCode, const std::string &message);
+
+    /** 回调 Java 播放器错误事件。 */
+    void notifyError(int errorCode, const std::string &message);
+
+    /** 更新缓冲状态并按需发出事件。 */
+    void updateBufferingState(bool isBuffering, const std::string &message);
 
     /** 生成打开输入流失败的中文提示。 */
     std::string makeOpenInputHint(const std::string &error);

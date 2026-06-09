@@ -54,6 +54,8 @@ public class ECHPlayer implements AutoCloseable {
     public static final int ERROR_RECORD_FAILED = 1008;
     /** 非法状态。 */
     public static final int ERROR_INVALID_STATE = 1009;
+    /** 当前媒体流不支持 seek。 */
+    public static final int ERROR_STREAM_NOT_SEEKABLE = 1010;
     /** 未知错误。 */
     public static final int ERROR_UNKNOWN = 1999;
 
@@ -126,6 +128,14 @@ public class ECHPlayer implements AutoCloseable {
     public static final String OPTION_VALUE_TCP = "tcp";
     /** RTSP UDP option 值。 */
     public static final String OPTION_VALUE_UDP = "udp";
+    /** 打开输入超时时间 option 名称，单位微秒。 */
+    public static final String OPTION_TIMEOUT = "timeout";
+    /** 网络读取超时时间 option 名称，单位微秒。 */
+    public static final String OPTION_RW_TIMEOUT = "rw_timeout";
+    /** 网络输入缓冲大小 option 名称，单位字节。 */
+    public static final String OPTION_BUFFER_SIZE = "buffer_size";
+    /** RTSP 最大延迟 option 名称，单位微秒。 */
+    public static final String OPTION_MAX_DELAY = "max_delay";
 
     static {
         System.loadLibrary("abcplaydemo");
@@ -240,7 +250,7 @@ public class ECHPlayer implements AutoCloseable {
             return true;
         }
 
-        return false;
+        return nativeSetLongOption(nativeHandle, category, name, value);
     }
 
     /** 设置 String 类型播放器选项。 */
@@ -254,6 +264,12 @@ public class ECHPlayer implements AutoCloseable {
                 setRtspTransport(RTSP_TRANSPORT_TCP);
             }
             return true;
+        }
+
+        try {
+            return setOption(category, name, Long.parseLong(value));
+        } catch (NumberFormatException ignored) {
+            // 字符串 option 目前仅 RTSP 传输方式需要，其他网络参数使用 long 更清晰。
         }
 
         return false;
@@ -425,6 +441,8 @@ public class ECHPlayer implements AutoCloseable {
         String result = nativeSeekToMs(nativeHandle, positionMs);
         if (result != null && result.startsWith("seek success")) {
             dispatchInfo(INFO_SEEK_COMPLETE, result);
+        } else if (result != null && result.contains("not seekable")) {
+            dispatchError(ERROR_STREAM_NOT_SEEKABLE, result);
         } else {
             dispatchError(ERROR_UNKNOWN, result);
         }
@@ -469,6 +487,11 @@ public class ECHPlayer implements AutoCloseable {
     /** 返回当前是否已经 prepare 成功。 */
     public synchronized boolean isPrepared() {
         return !released && prepared;
+    }
+
+    /** 返回当前媒体是否支持 seek。 */
+    public synchronized boolean isSeekable() {
+        return !released && nativeIsSeekable(nativeHandle);
     }
 
     /** 返回当前播放器是否已经释放。 */
@@ -600,6 +623,26 @@ public class ECHPlayer implements AutoCloseable {
         if (track != null && data != null && size > 0) {
             track.write(data, 0, size);
         }
+    }
+
+    /** Native 回调：播放器信息事件。 */
+    private synchronized void onNativeInfo(int infoCode, String message) {
+        if (infoCode == INFO_BUFFERING_START) {
+            dispatchBufferingUpdate(0);
+        } else if (infoCode == INFO_BUFFERING_END) {
+            dispatchBufferingUpdate(100);
+        }
+        dispatchInfo(infoCode, message);
+    }
+
+    /** Native 回调：播放器错误事件。 */
+    private synchronized void onNativeError(int errorCode, String message) {
+        if (state != State.RELEASED) {
+            state = State.ERROR;
+            playing = false;
+            paused = false;
+        }
+        dispatchError(errorCode, message);
     }
 
     /** 释放当前 AudioTrack。 */
@@ -748,6 +791,9 @@ public class ECHPlayer implements AutoCloseable {
     /** 设置 NativePlayer 的 RTSP 传输方式。 */
     private native void nativeSetRtspTransport(long nativeHandle, int transport);
 
+    /** 设置 NativePlayer 的 long 类型 option。 */
+    private native boolean nativeSetLongOption(long nativeHandle, int category, String name, long value);
+
     /** 调用 NativePlayer.prepare。 */
     private native String nativePrepare(long nativeHandle);
 
@@ -771,6 +817,9 @@ public class ECHPlayer implements AutoCloseable {
 
     /** 调用 NativePlayer.getCurrentPositionMs。 */
     private native long nativeGetCurrentPositionMs(long nativeHandle);
+
+    /** 调用 NativePlayer.isSeekable。 */
+    private native boolean nativeIsSeekable(long nativeHandle);
 
     /** 调用 NativePlayer.copyCurrentFrameRgba。 */
     private native byte[] nativeGetCurrentFrameRgba(long nativeHandle);

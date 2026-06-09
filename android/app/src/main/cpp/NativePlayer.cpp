@@ -3,6 +3,7 @@
 #include <android/log.h>
 #include <android/native_window.h>
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cstring>
 #include <iomanip>
@@ -31,6 +32,10 @@ static constexpr size_t AUDIO_PACKET_QUEUE_MAX = 240;
 static constexpr int64_t AV_SYNC_THRESHOLD_MIN_US = 40000;   // 40ms
 static constexpr int64_t AV_SYNC_THRESHOLD_MAX_US = 100000;  // 100ms
 static constexpr int64_t AV_NOSYNC_THRESHOLD_US = 10000000;  // 10s
+static constexpr int PLAYER_ERROR_NETWORK_TIMEOUT = 1005;
+static constexpr int PLAYER_ERROR_UNKNOWN = 1999;
+static constexpr int PLAYER_INFO_BUFFERING_START = 2011;
+static constexpr int PLAYER_INFO_BUFFERING_END = 2012;
 
 /** 创建 Native 播放器实例并缓存 Java 回调。 */
 NativePlayer::NativePlayer(JavaVM *vm, JNIEnv *env, jobject javaPlayer)
@@ -61,10 +66,18 @@ NativePlayer::NativePlayer(JavaVM *vm, JNIEnv *env, jobject javaPlayer)
           captureSrcHeight(0),
           captureSrcFormat(-1),
           rtspTransport(0),
+          openTimeoutUs(5000000),
+          readWriteTimeoutUs(5000000),
+          inputBufferSize(1024000),
+          maxDelayUs(500000),
+          seekable(false),
+          buffering(false),
           javaVm(vm),
           javaPlayerObject(nullptr),
           onNativeAudioInfoMethod(nullptr),
           onNativeAudioDataMethod(nullptr),
+          onNativeInfoMethod(nullptr),
+          onNativeErrorMethod(nullptr),
           recordFormatContext(nullptr),
           recording(false),
           recordingOutputPath(),
@@ -85,6 +98,18 @@ NativePlayer::NativePlayer(JavaVM *vm, JNIEnv *env, jobject javaPlayer)
                     clazz,
                     "onNativeAudioData",
                     "([BI)V"
+            );
+
+            onNativeInfoMethod = env->GetMethodID(
+                    clazz,
+                    "onNativeInfo",
+                    "(ILjava/lang/String;)V"
+            );
+
+            onNativeErrorMethod = env->GetMethodID(
+                    clazz,
+                    "onNativeError",
+                    "(ILjava/lang/String;)V"
             );
 
             env->DeleteLocalRef(clazz);
@@ -110,6 +135,7 @@ NativePlayer::~NativePlayer() {
 /** 设置数据源路径或网络地址。 */
 void NativePlayer::setDataSource(const std::string &source) {
     dataSource = source;
+    seekable = false;
     ECH_LOGI("setDataSource: %s", dataSource.c_str());
 }
 
@@ -142,6 +168,37 @@ void NativePlayer::setRtspTransport(int transport) {
     ECH_LOGI("setRtspTransport: %d", rtspTransport);
 }
 
+/** 设置 long 类型播放器选项。 */
+bool NativePlayer::setLongOption(int category, const std::string &name, int64_t value) {
+    (void) category;
+
+    if (value < 0) {
+        return false;
+    }
+
+    if (name == "timeout") {
+        openTimeoutUs = value;
+        return true;
+    }
+
+    if (name == "rw_timeout") {
+        readWriteTimeoutUs = value;
+        return true;
+    }
+
+    if (name == "buffer_size") {
+        inputBufferSize = value;
+        return true;
+    }
+
+    if (name == "max_delay") {
+        maxDelayUs = value;
+        return true;
+    }
+
+    return false;
+}
+
 /** 打开输入流并读取音视频信息。 */
 std::string NativePlayer::prepare() {
     if (dataSource.empty()) {
@@ -162,10 +219,10 @@ std::string NativePlayer::prepare() {
                 rtspTransport == 1 ? "udp" : "tcp",
                 0
         );
-        av_dict_set(&options, "timeout", "5000000", 0);
-        av_dict_set(&options, "rw_timeout", "5000000", 0);
-        av_dict_set(&options, "buffer_size", "1024000", 0);
-        av_dict_set(&options, "max_delay", "500000", 0);
+        av_dict_set(&options, "timeout", std::to_string(openTimeoutUs).c_str(), 0);
+        av_dict_set(&options, "rw_timeout", std::to_string(readWriteTimeoutUs).c_str(), 0);
+        av_dict_set(&options, "buffer_size", std::to_string(inputBufferSize).c_str(), 0);
+        av_dict_set(&options, "max_delay", std::to_string(maxDelayUs).c_str(), 0);
     }
 
     int ret = avformat_open_input(&formatContext, dataSource.c_str(), nullptr, &options);
@@ -217,6 +274,9 @@ std::string NativePlayer::prepare() {
         return "prepare failed: no video stream found";
     }
 
+    seekable = dataSource.rfind("rtsp://", 0) != 0
+               && formatContext->duration != AV_NOPTS_VALUE
+               && formatContext->duration > 0;
     prepared = true;
 
     std::ostringstream oss;
@@ -302,6 +362,7 @@ std::string NativePlayer::play() {
     stopRequested = false;
     paused = false;
     demuxFinished = false;
+    buffering = false;
     playing = true;
     activePlaybackWorkers = audioStreamIndex >= 0 ? 2 : 1;
     audioClockUs = std::numeric_limits<int64_t>::min();
@@ -374,6 +435,10 @@ std::string NativePlayer::seekToMs(int64_t positionMs) {
 
     if (positionMs < 0) {
         positionMs = 0;
+    }
+
+    if (!seekable) {
+        return "seek failed: stream is not seekable";
     }
 
     bool wasPlaying = playing.load();
@@ -612,6 +677,11 @@ bool NativePlayer::isRecording() {
     return recording;
 }
 
+/** 返回当前媒体是否支持 seek。 */
+bool NativePlayer::isSeekable() {
+    return prepared && formatContext != nullptr && seekable;
+}
+
 /** 解封装线程，负责读取原始包并分发给解码与录制。 */
 void NativePlayer::demuxLoop() {
     ECH_LOGI("demuxLoop start");
@@ -627,6 +697,14 @@ void NativePlayer::demuxLoop() {
     while (!stopRequested.load()) {
         int ret = av_read_frame(formatContext, packet);
         if (ret < 0) {
+            if (ret != AVERROR_EOF && !stopRequested.load()) {
+                std::string error = makeErrorString(ret);
+                ECH_LOGE("av_read_frame failed: %s", error.c_str());
+                int errorCode = ret == AVERROR(ETIMEDOUT)
+                                ? PLAYER_ERROR_NETWORK_TIMEOUT
+                                : PLAYER_ERROR_UNKNOWN;
+                notifyError(errorCode, "network read failed: " + error);
+            }
             break;
         }
 
@@ -1482,12 +1560,15 @@ bool NativePlayer::dequeueVideoPacket(AVPacket *outPacket) {
         if (demuxFinished.load()) {
             return false;
         }
+        updateBufferingState(true, "video packet queue is empty");
         packetQueueCond.wait(lock);
     }
 
     if (stopRequested.load() || videoPacketQueue.empty()) {
         return false;
     }
+
+    updateBufferingState(false, "video packet queue recovered");
 
     AVPacket *srcPacket = videoPacketQueue.front();
     videoPacketQueue.pop_front();
@@ -1510,12 +1591,15 @@ bool NativePlayer::dequeueAudioPacket(AVPacket *outPacket) {
         if (demuxFinished.load()) {
             return false;
         }
+        updateBufferingState(true, "audio packet queue is empty");
         packetQueueCond.wait(lock);
     }
 
     if (stopRequested.load() || audioPacketQueue.empty()) {
         return false;
     }
+
+    updateBufferingState(false, "audio packet queue recovered");
 
     AVPacket *srcPacket = audioPacketQueue.front();
     audioPacketQueue.pop_front();
@@ -1795,6 +1879,49 @@ void NativePlayer::notifyAudioData(uint8_t *data, int size) {
     releaseJNIEnv(needDetach);
 }
 
+/** 回调 Java 播放器信息事件。 */
+void NativePlayer::notifyInfo(int infoCode, const std::string &message) {
+    bool needDetach = false;
+    JNIEnv *env = getJNIEnv(&needDetach);
+
+    if (env != nullptr && javaPlayerObject != nullptr && onNativeInfoMethod != nullptr) {
+        jstring messageString = env->NewStringUTF(message.c_str());
+        if (messageString != nullptr) {
+            env->CallVoidMethod(javaPlayerObject, onNativeInfoMethod, infoCode, messageString);
+            env->DeleteLocalRef(messageString);
+        }
+    }
+
+    releaseJNIEnv(needDetach);
+}
+
+/** 回调 Java 播放器错误事件。 */
+void NativePlayer::notifyError(int errorCode, const std::string &message) {
+    bool needDetach = false;
+    JNIEnv *env = getJNIEnv(&needDetach);
+
+    if (env != nullptr && javaPlayerObject != nullptr && onNativeErrorMethod != nullptr) {
+        jstring messageString = env->NewStringUTF(message.c_str());
+        if (messageString != nullptr) {
+            env->CallVoidMethod(javaPlayerObject, onNativeErrorMethod, errorCode, messageString);
+            env->DeleteLocalRef(messageString);
+        }
+    }
+
+    releaseJNIEnv(needDetach);
+}
+
+/** 更新缓冲状态并按需通知 Java。 */
+void NativePlayer::updateBufferingState(bool isBuffering, const std::string &message) {
+    bool expected = !isBuffering;
+    if (buffering.compare_exchange_strong(expected, isBuffering)) {
+        notifyInfo(
+                isBuffering ? PLAYER_INFO_BUFFERING_START : PLAYER_INFO_BUFFERING_END,
+                message
+        );
+    }
+}
+
 /** 释放 Java 回调对象引用。 */
 void NativePlayer::releaseJavaCallback() {
     if (javaVm == nullptr || javaPlayerObject == nullptr) {
@@ -1811,6 +1938,8 @@ void NativePlayer::releaseJavaCallback() {
     javaPlayerObject = nullptr;
     onNativeAudioInfoMethod = nullptr;
     onNativeAudioDataMethod = nullptr;
+    onNativeInfoMethod = nullptr;
+    onNativeErrorMethod = nullptr;
 
     releaseJNIEnv(needDetach);
 }
@@ -1832,6 +1961,8 @@ void NativePlayer::releaseFormatContext() {
     videoStreamIndex = -1;
     audioStreamIndex = -1;
     prepared = false;
+    seekable = false;
+    buffering = false;
 }
 
 /** 释放 Surface 引用。 */
