@@ -2,7 +2,6 @@ package com.example.abcplaydemo;
 
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.graphics.Bitmap;
 import android.graphics.PixelFormat;
 import android.net.Uri;
 import android.os.Bundle;
@@ -30,7 +29,6 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.ByteBuffer;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
@@ -121,6 +119,8 @@ public class MainActivity extends AppCompatActivity {
     private int surfaceHeight = 0;
     /** 当前录制文件路径。 */
     private String currentRecordingPath = null;
+    /** 最近一次截图文件路径。 */
+    private String lastCapturePath = null;
     /** 主线程 Handler。 */
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     /** 定时刷新进度的任务。 */
@@ -199,10 +199,7 @@ public class MainActivity extends AppCompatActivity {
 
         stopButton.setOnClickListener(v -> {
             if (player != null) {
-                if (player.isRecording()) {
-                    appendLog(player.stopRecording());
-                    currentRecordingPath = null;
-                }
+                stopRecordingWithLog();
                 player.stop();
                 updateRecordButtonState();
                 appendLog("stop");
@@ -289,10 +286,7 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void surfaceDestroyed(@NonNull SurfaceHolder holder) {
                 if (player != null) {
-                    if (player.isRecording()) {
-                        appendLog(player.stopRecording());
-                        currentRecordingPath = null;
-                    }
+                    stopRecordingWithLog();
                     player.stop();
                     player.setSurface(null);
                     updateRecordButtonState();
@@ -318,9 +312,7 @@ public class MainActivity extends AppCompatActivity {
         stopProgressUpdates();
 
         if (player != null) {
-            if (player.isRecording()) {
-                appendLog(player.stopRecording());
-            }
+            stopRecordingWithLog();
             player.stop();
             player.release();
             player = null;
@@ -647,8 +639,12 @@ public class MainActivity extends AppCompatActivity {
 
     /** 更新录制按钮的显示文本。 */
     private void updateRecordButtonState() {
-        if (player != null && player.isRecording()) {
+        if (player != null && player.getRecordingState() == ECHPlayer.RecordingState.RECORDING) {
             recordButton.setText("停止录制");
+        } else if (player != null && player.getRecordingState() == ECHPlayer.RecordingState.STOPPING) {
+            recordButton.setText("停止中");
+        } else if (player != null && player.getRecordingState() == ECHPlayer.RecordingState.FAILED) {
+            recordButton.setText("录制失败");
         } else {
             recordButton.setText("开始录制");
         }
@@ -661,34 +657,16 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        int[] frameSize = player.getCurrentFrameSize();
-        byte[] rgbaData = player.getCurrentFrameRgba();
-        int frameWidth = frameSize != null && frameSize.length >= 2 ? frameSize[0] : 0;
-        int frameHeight = frameSize != null && frameSize.length >= 2 ? frameSize[1] : 0;
-
-        if (frameWidth <= 0 || frameHeight <= 0 || rgbaData == null || rgbaData.length == 0) {
-            appendLog("capture failed: current decoded frame is unavailable");
-            return;
-        }
-
-        int expectedSize = frameWidth * frameHeight * 4;
-        if (rgbaData.length < expectedSize) {
-            appendLog("capture failed: rgba data size is invalid");
-            return;
-        }
-
         File outputFile = buildOutputFile(SCREENSHOT_DIR, "png");
-        Bitmap bitmap = Bitmap.createBitmap(frameWidth, frameHeight, Bitmap.Config.ARGB_8888);
-        bitmap.copyPixelsFromBuffer(ByteBuffer.wrap(rgbaData, 0, expectedSize));
-
-        try (FileOutputStream outputStream = new FileOutputStream(outputFile, false)) {
-            boolean compressed = bitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream);
-            outputStream.flush();
-            if (compressed) {
-                appendLog("capture success\nfile: " + outputFile.getAbsolutePath());
-            } else {
-                appendLog("capture failed: bitmap compress returned false");
-            }
+        try {
+            ECHPlayer.CaptureResult result = player.captureCurrentFramePng(outputFile.getAbsolutePath());
+            lastCapturePath = result.filePath;
+            appendLog(
+                    "capture success"
+                            + "\nfile: " + result.filePath
+                            + "\nsize: " + result.width + "x" + result.height
+                            + "\ntimestampMs: " + result.timestampMs
+            );
         } catch (IOException e) {
             appendLog("capture failed: " + e.getMessage());
         }
@@ -702,8 +680,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         if (player.isRecording()) {
-            appendLog(player.stopRecording());
-            currentRecordingPath = null;
+            stopRecordingWithLog();
             updateRecordButtonState();
             return;
         }
@@ -711,10 +688,24 @@ public class MainActivity extends AppCompatActivity {
         File outputFile = buildOutputFile(RECORD_DIR, "mkv");
         currentRecordingPath = outputFile.getAbsolutePath();
         appendLog(player.startRecording(currentRecordingPath));
+        appendLog("record state: " + player.getRecordingState()
+                + "\nfile: " + player.getLastRecordingPath());
         if (!player.isRecording()) {
             currentRecordingPath = null;
         }
         updateRecordButtonState();
+    }
+
+    /** 停止录制并展示录制状态与文件路径。 */
+    private void stopRecordingWithLog() {
+        if (player == null || !player.isRecording()) {
+            return;
+        }
+
+        appendLog(player.stopRecording());
+        appendLog("record state: " + player.getRecordingState()
+                + "\nlast file: " + player.getLastRecordingPath());
+        currentRecordingPath = null;
     }
 
     /** 生成输出文件路径。 */
@@ -768,9 +759,7 @@ public class MainActivity extends AppCompatActivity {
         stopProgressUpdates();
 
         if (player != null) {
-            if (player.isRecording()) {
-                appendLog(player.stopRecording());
-            }
+            stopRecordingWithLog();
             player.stop();
             player.release();
             player = null;

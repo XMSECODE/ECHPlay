@@ -1,9 +1,15 @@
 package com.example.abcplaydemo.player;
 
+import android.graphics.Bitmap;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioTrack;
 import android.view.Surface;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.nio.ByteBuffer;
 
 /**
  * Java 层播放器封装，负责桥接 UI 与 NativePlayer。
@@ -36,6 +42,42 @@ public class ECHPlayer implements AutoCloseable {
         ERROR,
         /** 已释放。 */
         RELEASED
+    }
+
+    /**
+     * 录制状态机，用于让外部页面明确知道当前录制阶段。
+     */
+    public enum RecordingState {
+        /** 当前没有录制任务。 */
+        IDLE,
+        /** 正在录制。 */
+        RECORDING,
+        /** 正在停止录制。 */
+        STOPPING,
+        /** 录制失败。 */
+        FAILED
+    }
+
+    /**
+     * 截图结果，保存 PNG 路径、尺寸和截图时间戳。
+     */
+    public static class CaptureResult {
+        /** PNG 文件绝对路径。 */
+        public final String filePath;
+        /** 截图宽度。 */
+        public final int width;
+        /** 截图高度。 */
+        public final int height;
+        /** 截图创建时间戳，单位毫秒。 */
+        public final long timestampMs;
+
+        /** 创建截图结果对象。 */
+        public CaptureResult(String filePath, int width, int height, long timestampMs) {
+            this.filePath = filePath;
+            this.width = width;
+            this.height = height;
+            this.timestampMs = timestampMs;
+        }
     }
 
     /** 打开输入失败。 */
@@ -179,6 +221,10 @@ public class ECHPlayer implements AutoCloseable {
     private boolean completionDispatched = false;
     /** 当前是否正在执行 seek。 */
     private boolean seeking = false;
+    /** 当前录制状态。 */
+    private RecordingState recordingState = RecordingState.IDLE;
+    /** 最近一次录制文件路径。 */
+    private String lastRecordingPath = "";
 
     /** Java 音频输出实例。 */
     private AudioTrack audioTrack;
@@ -405,6 +451,7 @@ public class ECHPlayer implements AutoCloseable {
             if (state == State.IDLE || state == State.RELEASED) {
                 return;
             }
+            stopRecordingIfNeeded();
             nativeStop(nativeHandle);
             releaseAudioTrack();
             prepared = false;
@@ -419,6 +466,7 @@ public class ECHPlayer implements AutoCloseable {
     public synchronized void reset() {
         checkReleased();
 
+        stopRecordingIfNeeded();
         nativeStop(nativeHandle);
         releaseAudioTrack();
         nativeRelease(nativeHandle);
@@ -429,6 +477,8 @@ public class ECHPlayer implements AutoCloseable {
         lastPrepareResult = "";
         lastStartResult = "";
         rtspTransport = RTSP_TRANSPORT_TCP;
+        recordingState = RecordingState.IDLE;
+        lastRecordingPath = "";
         resetPlaybackEventFlags();
         state = State.IDLE;
     }
@@ -552,13 +602,68 @@ public class ECHPlayer implements AutoCloseable {
         return nativeGetCurrentFrameSize(nativeHandle);
     }
 
+    /** 把当前解码后的原始帧保存为 PNG，并返回截图结果。 */
+    public synchronized CaptureResult captureCurrentFramePng(String outputPath) throws IOException {
+        checkReleased();
+        if (outputPath == null || outputPath.length() == 0) {
+            throw new IOException("outputPath is empty");
+        }
+
+        int[] frameSize = nativeGetCurrentFrameSize(nativeHandle);
+        byte[] rgbaData = nativeGetCurrentFrameRgba(nativeHandle);
+        int frameWidth = frameSize != null && frameSize.length >= 2 ? frameSize[0] : 0;
+        int frameHeight = frameSize != null && frameSize.length >= 2 ? frameSize[1] : 0;
+
+        if (frameWidth <= 0 || frameHeight <= 0 || rgbaData == null || rgbaData.length == 0) {
+            throw new IOException("current decoded frame is unavailable");
+        }
+
+        int expectedSize = frameWidth * frameHeight * 4;
+        if (rgbaData.length < expectedSize) {
+            throw new IOException("rgba data size is invalid");
+        }
+
+        File outputFile = new File(outputPath);
+        File parentDir = outputFile.getParentFile();
+        if (parentDir != null && !parentDir.exists() && !parentDir.mkdirs()) {
+            throw new IOException("cannot create output dir: " + parentDir.getAbsolutePath());
+        }
+
+        Bitmap bitmap = Bitmap.createBitmap(frameWidth, frameHeight, Bitmap.Config.ARGB_8888);
+        bitmap.copyPixelsFromBuffer(ByteBuffer.wrap(rgbaData, 0, expectedSize));
+
+        try (FileOutputStream outputStream = new FileOutputStream(outputFile, false)) {
+            boolean compressed = bitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream);
+            outputStream.flush();
+            if (!compressed) {
+                throw new IOException("bitmap compress returned false");
+            }
+        } finally {
+            bitmap.recycle();
+        }
+
+        return new CaptureResult(
+                outputFile.getAbsolutePath(),
+                frameWidth,
+                frameHeight,
+                System.currentTimeMillis()
+        );
+    }
+
     /** 开始录制当前播放中的流。 */
     public synchronized String startRecording(String outputPath) {
         checkReleased();
+        if (recordingState == RecordingState.RECORDING) {
+            return "recording ignored: already recording\nfile: " + lastRecordingPath;
+        }
+
         String result = nativeStartRecording(nativeHandle, outputPath);
         if (result != null && result.startsWith("recording started")) {
+            recordingState = RecordingState.RECORDING;
+            lastRecordingPath = outputPath == null ? "" : outputPath;
             dispatchInfo(INFO_RECORDING_START, result);
         } else {
+            recordingState = RecordingState.FAILED;
             dispatchError(ERROR_RECORD_FAILED, result);
         }
         return result;
@@ -567,9 +672,21 @@ public class ECHPlayer implements AutoCloseable {
     /** 停止录制当前播放中的流。 */
     public synchronized String stopRecording() {
         checkReleased();
+        if (recordingState != RecordingState.RECORDING && !nativeIsRecording(nativeHandle)) {
+            recordingState = RecordingState.IDLE;
+            return "recording not running";
+        }
+
+        recordingState = RecordingState.STOPPING;
         String result = nativeStopRecording(nativeHandle);
         if (result != null && result.startsWith("recording stopped")) {
+            recordingState = RecordingState.IDLE;
             dispatchInfo(INFO_RECORDING_END, result);
+        } else if (result != null && result.startsWith("recording not running")) {
+            recordingState = RecordingState.IDLE;
+        } else {
+            recordingState = RecordingState.FAILED;
+            dispatchError(ERROR_RECORD_FAILED, result);
         }
         return result;
     }
@@ -578,6 +695,16 @@ public class ECHPlayer implements AutoCloseable {
     public synchronized boolean isRecording() {
         checkReleased();
         return nativeIsRecording(nativeHandle);
+    }
+
+    /** 返回当前录制状态。 */
+    public synchronized RecordingState getRecordingState() {
+        return recordingState;
+    }
+
+    /** 返回最近一次录制文件路径。 */
+    public synchronized String getLastRecordingPath() {
+        return lastRecordingPath;
     }
 
     /** 获取 FFmpeg 版本号。 */
@@ -589,12 +716,14 @@ public class ECHPlayer implements AutoCloseable {
     /** 释放播放器实例。 */
     public synchronized void release() {
         if (!released) {
+            stopRecordingIfNeeded();
             nativeRelease(nativeHandle);
             nativeHandle = 0;
             released = true;
             prepared = false;
             playing = false;
             paused = false;
+            recordingState = RecordingState.IDLE;
             state = State.RELEASED;
 
             releaseAudioTrack();
@@ -689,6 +818,15 @@ public class ECHPlayer implements AutoCloseable {
     private void checkReleased() {
         if (released || nativeHandle == 0) {
             throw new IllegalStateException("ECHPlayer has been released");
+        }
+    }
+
+    /** 如果正在录制则安全停止。 */
+    private void stopRecordingIfNeeded() {
+        if (nativeHandle != 0 && nativeIsRecording(nativeHandle)) {
+            recordingState = RecordingState.STOPPING;
+            nativeStopRecording(nativeHandle);
+            recordingState = RecordingState.IDLE;
         }
     }
 
