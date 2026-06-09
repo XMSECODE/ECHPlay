@@ -185,8 +185,7 @@ public class MainActivity extends AppCompatActivity {
 
         resumeButton.setOnClickListener(v -> {
             if (player != null) {
-                player.resume();
-                appendLog("resume");
+                appendLog(player.start());
             }
         });
 
@@ -225,7 +224,7 @@ public class MainActivity extends AppCompatActivity {
 
                 if (player != null && durationMs > 0) {
                     long targetPositionMs = durationMs * seekBar.getProgress() / 1000L;
-                    String seekInfo = player.seekToMs(targetPositionMs);
+                    String seekInfo = player.seekTo(targetPositionMs);
                     appendLog(seekInfo);
                     updateProgressUi();
                 }
@@ -337,10 +336,10 @@ public class MainActivity extends AppCompatActivity {
             String prepareInfo = player.prepare();
             text.append(prepareInfo);
             text.append("\n\n");
-            durationMs = Math.max(0, player.getDurationMs());
+            durationMs = Math.max(0, player.getDuration());
             durationTimeText.setText(formatTime(durationMs));
 
-            String playInfo = player.play();
+            String playInfo = player.start();
             text.append(playInfo);
             startProgressUpdates();
             updateRecordButtonState();
@@ -445,23 +444,6 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    /** 持久化当前输入的数据源。 */
-    private void persistLastDataSource() {
-        String input = dataSourceInput.getText().toString().trim();
-        if (input.isEmpty()) {
-            return;
-        }
-
-        SharedPreferences preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        preferences.edit().putString(KEY_LAST_DATA_SOURCE, input).apply();
-    }
-
-    /** 持久化当前 RTSP 传输方式。 */
-    private void persistRtspTransport() {
-        SharedPreferences preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        preferences.edit().putInt(KEY_RTSP_TRANSPORT, resolveRtspTransport()).apply();
-    }
-
     /** 解析当前 RTSP 传输方式。 */
     private int resolveRtspTransport() {
         return transportGroup.getCheckedRadioButtonId() == R.id.transportUdpButton
@@ -491,13 +473,13 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        long latestDurationMs = player.getDurationMs();
+        long latestDurationMs = player.getDuration();
         if (latestDurationMs > 0) {
             durationMs = latestDurationMs;
             durationTimeText.setText(formatTime(durationMs));
         }
 
-        long currentPositionMs = player.getCurrentPositionMs();
+        long currentPositionMs = player.getCurrentPosition();
         if (currentPositionMs < 0) {
             return;
         }

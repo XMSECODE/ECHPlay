@@ -14,6 +14,16 @@ public class ECHPlayer implements AutoCloseable {
     public static final int RTSP_TRANSPORT_TCP = 0;
     /** RTSP 走 UDP 传输。 */
     public static final int RTSP_TRANSPORT_UDP = 1;
+    /** FFmpeg format 层 option 分类。 */
+    public static final int OPTION_CATEGORY_FORMAT = 1;
+    /** 播放器自身 option 分类。 */
+    public static final int OPTION_CATEGORY_PLAYER = 2;
+    /** RTSP 传输方式 option 名称。 */
+    public static final String OPTION_RTSP_TRANSPORT = "rtsp_transport";
+    /** RTSP TCP option 值。 */
+    public static final String OPTION_VALUE_TCP = "tcp";
+    /** RTSP UDP option 值。 */
+    public static final String OPTION_VALUE_UDP = "udp";
 
     static {
         System.loadLibrary("abcplaydemo");
@@ -23,6 +33,18 @@ public class ECHPlayer implements AutoCloseable {
     private long nativeHandle = 0;
     /** 当前对象是否已经释放。 */
     private boolean released = false;
+    /** 当前是否已经 prepare 成功。 */
+    private boolean prepared = false;
+    /** 当前是否处于播放中。 */
+    private boolean playing = false;
+    /** 当前是否处于暂停状态。 */
+    private boolean paused = false;
+    /** 最近一次 prepare 返回信息。 */
+    private String lastPrepareResult = "";
+    /** 最近一次 start 返回信息。 */
+    private String lastStartResult = "";
+    /** 当前 RTSP 传输方式。 */
+    private int rtspTransport = RTSP_TRANSPORT_TCP;
 
     /** Java 音频输出实例。 */
     private AudioTrack audioTrack;
@@ -41,6 +63,9 @@ public class ECHPlayer implements AutoCloseable {
         }
 
         nativeSetDataSource(nativeHandle, dataSource);
+        prepared = false;
+        playing = false;
+        paused = false;
     }
 
     /** 设置视频输出 Surface。 */
@@ -52,19 +77,87 @@ public class ECHPlayer implements AutoCloseable {
     /** 设置 RTSP 传输方式。 */
     public synchronized void setRtspTransport(int transport) {
         checkReleased();
-        nativeSetRtspTransport(nativeHandle, transport);
+        rtspTransport = transport == RTSP_TRANSPORT_UDP
+                ? RTSP_TRANSPORT_UDP
+                : RTSP_TRANSPORT_TCP;
+        nativeSetRtspTransport(nativeHandle, rtspTransport);
+    }
+
+    /** 设置 long 类型播放器选项。 */
+    public synchronized boolean setOption(int category, String name, long value) {
+        checkReleased();
+
+        if (OPTION_RTSP_TRANSPORT.equals(name)) {
+            setRtspTransport(value == RTSP_TRANSPORT_UDP ? RTSP_TRANSPORT_UDP : RTSP_TRANSPORT_TCP);
+            return true;
+        }
+
+        return false;
+    }
+
+    /** 设置 String 类型播放器选项。 */
+    public synchronized boolean setOption(int category, String name, String value) {
+        checkReleased();
+
+        if (OPTION_RTSP_TRANSPORT.equals(name)) {
+            if (OPTION_VALUE_UDP.equalsIgnoreCase(value)) {
+                setRtspTransport(RTSP_TRANSPORT_UDP);
+            } else {
+                setRtspTransport(RTSP_TRANSPORT_TCP);
+            }
+            return true;
+        }
+
+        return false;
     }
 
     /** 打开数据源并读取流信息。 */
     public synchronized String prepare() {
         checkReleased();
-        return nativePrepare(nativeHandle);
+        lastPrepareResult = nativePrepare(nativeHandle);
+        prepared = lastPrepareResult != null && lastPrepareResult.startsWith("prepare success");
+        playing = false;
+        paused = false;
+        return lastPrepareResult;
+    }
+
+    /** 异步打开数据源并读取流信息。 */
+    public synchronized void prepareAsync() {
+        checkReleased();
+
+        Thread prepareThread = new Thread(() -> {
+            synchronized (ECHPlayer.this) {
+                if (!released && nativeHandle != 0) {
+                    prepare();
+                }
+            }
+        }, "ECHPlayer-Prepare");
+        prepareThread.start();
     }
 
     /** 启动播放。 */
     public synchronized String play() {
+        return start();
+    }
+
+    /** 按标准播放器命名启动或恢复播放。 */
+    public synchronized String start() {
         checkReleased();
-        return nativePlay(nativeHandle);
+
+        if (paused) {
+            resume();
+            lastStartResult = "play resumed";
+            return lastStartResult;
+        }
+
+        lastStartResult = nativePlay(nativeHandle);
+        if (lastStartResult != null
+                && (lastStartResult.startsWith("play started")
+                || lastStartResult.startsWith("play ignored"))) {
+            playing = true;
+            paused = false;
+        }
+        return lastStartResult;
     }
 
     /** 暂停播放。 */
@@ -75,6 +168,9 @@ public class ECHPlayer implements AutoCloseable {
             if (audioTrack != null) {
                 audioTrack.pause();
             }
+
+            playing = false;
+            paused = true;
         }
     }
 
@@ -86,6 +182,8 @@ public class ECHPlayer implements AutoCloseable {
             }
 
             nativeResume(nativeHandle);
+            playing = true;
+            paused = false;
         }
     }
 
@@ -94,25 +192,84 @@ public class ECHPlayer implements AutoCloseable {
         if (!released && nativeHandle != 0) {
             nativeStop(nativeHandle);
             releaseAudioTrack();
+            prepared = false;
+            playing = false;
+            paused = false;
         }
+    }
+
+    /** 重置播放器，回到可重新设置数据源的初始状态。 */
+    public synchronized void reset() {
+        checkReleased();
+
+        nativeStop(nativeHandle);
+        releaseAudioTrack();
+        nativeRelease(nativeHandle);
+        nativeHandle = nativeInit();
+        prepared = false;
+        playing = false;
+        paused = false;
+        lastPrepareResult = "";
+        lastStartResult = "";
+        rtspTransport = RTSP_TRANSPORT_TCP;
     }
 
     /** 跳转到指定毫秒位置。 */
     public synchronized String seekToMs(long positionMs) {
+        return seekTo(positionMs);
+    }
+
+    /** 按标准播放器命名跳转到指定毫秒位置。 */
+    public synchronized String seekTo(long positionMs) {
         checkReleased();
         return nativeSeekToMs(nativeHandle, positionMs);
     }
 
     /** 获取总时长。 */
     public synchronized long getDurationMs() {
+        return getDuration();
+    }
+
+    /** 按标准播放器命名获取总时长。 */
+    public synchronized long getDuration() {
         checkReleased();
         return nativeGetDurationMs(nativeHandle);
     }
 
     /** 获取当前播放位置。 */
     public synchronized long getCurrentPositionMs() {
+        return getCurrentPosition();
+    }
+
+    /** 按标准播放器命名获取当前播放位置。 */
+    public synchronized long getCurrentPosition() {
         checkReleased();
         return nativeGetCurrentPositionMs(nativeHandle);
+    }
+
+    /** 返回当前是否处于播放中。 */
+    public synchronized boolean isPlaying() {
+        return !released && playing;
+    }
+
+    /** 返回当前是否已经 prepare 成功。 */
+    public synchronized boolean isPrepared() {
+        return !released && prepared;
+    }
+
+    /** 返回当前播放器是否已经释放。 */
+    public synchronized boolean isReleased() {
+        return released;
+    }
+
+    /** 获取最近一次 prepare 返回信息。 */
+    public synchronized String getLastPrepareResult() {
+        return lastPrepareResult;
+    }
+
+    /** 获取最近一次 start 返回信息。 */
+    public synchronized String getLastStartResult() {
+        return lastStartResult;
     }
 
     /** 获取最近一帧的原始 RGBA 数据。 */
@@ -157,6 +314,9 @@ public class ECHPlayer implements AutoCloseable {
             nativeRelease(nativeHandle);
             nativeHandle = 0;
             released = true;
+            prepared = false;
+            playing = false;
+            paused = false;
 
             releaseAudioTrack();
         }
