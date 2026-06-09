@@ -44,8 +44,8 @@ BUILD_ROOT="$PROJECT_DIR/ffmpeg_build"
 SRC_DIR="$BUILD_ROOT/src/ffmpeg"
 PREFIX="$BUILD_ROOT/output/$ABI"
 
-APP_INCLUDE_DIR="$PROJECT_DIR/app/src/main/cpp/ffmpeg/include"
-APP_JNILIBS_DIR="$PROJECT_DIR/app/src/main/jniLibs/$ABI"
+LIBRARY_INCLUDE_DIR="$PROJECT_DIR/echplayer/src/main/cpp/ffmpeg/include"
+LIBRARY_JNILIBS_DIR="$PROJECT_DIR/echplayer/src/main/jniLibs/$ABI"
 
 mkdir -p "$BUILD_ROOT/src"
 mkdir -p "$PREFIX"
@@ -104,25 +104,25 @@ sed -i.bak \
 make -j"$(sysctl -n hw.logicalcpu)"
 make install
 
-rm -rf "$APP_INCLUDE_DIR"
-rm -rf "$APP_JNILIBS_DIR"
+rm -rf "$LIBRARY_INCLUDE_DIR"
+rm -rf "$LIBRARY_JNILIBS_DIR"
 
-mkdir -p "$APP_INCLUDE_DIR"
-mkdir -p "$APP_JNILIBS_DIR"
+mkdir -p "$LIBRARY_INCLUDE_DIR"
+mkdir -p "$LIBRARY_JNILIBS_DIR"
 
-cp -R "$PREFIX/include/"* "$APP_INCLUDE_DIR/"
+cp -R "$PREFIX/include/"* "$LIBRARY_INCLUDE_DIR/"
 
 for lib in avcodec avformat avutil swresample swscale; do
-  cp "$PREFIX/lib/lib${lib}.so" "$APP_JNILIBS_DIR/"
+  cp "$PREFIX/lib/lib${lib}.so" "$LIBRARY_JNILIBS_DIR/"
 done
 
-"$STRIP" "$APP_JNILIBS_DIR/"*.so || true
+"$STRIP" "$LIBRARY_JNILIBS_DIR/"*.so || true
 
 echo ""
 echo "FFmpeg Android arm64-v8a build success."
 echo ""
 echo "Headers:"
-echo "$APP_INCLUDE_DIR"
+echo "$LIBRARY_INCLUDE_DIR"
 echo ""
 echo "Shared libraries:"
-ls -lh "$APP_JNILIBS_DIR"
+ls -lh "$LIBRARY_JNILIBS_DIR"

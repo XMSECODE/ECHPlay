@@ -8,6 +8,7 @@ android {
 
     defaultConfig {
         minSdk 28
+        versionName "1.2.0"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles "consumer-rules.pro"
