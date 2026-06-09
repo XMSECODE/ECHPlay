@@ -36,6 +36,82 @@ public class ECHPlayer implements AutoCloseable {
         RELEASED
     }
 
+    /** 打开输入失败。 */
+    public static final int ERROR_OPEN_INPUT_FAILED = 1001;
+    /** 读取流信息失败。 */
+    public static final int ERROR_STREAM_INFO_FAILED = 1002;
+    /** 没有视频流。 */
+    public static final int ERROR_NO_VIDEO_STREAM = 1003;
+    /** 解码器打开失败。 */
+    public static final int ERROR_DECODER_OPEN_FAILED = 1004;
+    /** 网络超时。 */
+    public static final int ERROR_NETWORK_TIMEOUT = 1005;
+    /** RTSP 鉴权失败。 */
+    public static final int ERROR_RTSP_AUTH_FAILED = 1006;
+    /** 渲染 Surface 无效。 */
+    public static final int ERROR_RENDER_SURFACE_INVALID = 1007;
+    /** 录制失败。 */
+    public static final int ERROR_RECORD_FAILED = 1008;
+    /** 非法状态。 */
+    public static final int ERROR_INVALID_STATE = 1009;
+    /** 未知错误。 */
+    public static final int ERROR_UNKNOWN = 1999;
+
+    /** prepare 开始。 */
+    public static final int INFO_PREPARE_STARTED = 2001;
+    /** prepare 成功。 */
+    public static final int INFO_PREPARED = 2002;
+    /** 播放开始。 */
+    public static final int INFO_PLAY_STARTED = 2003;
+    /** seek 完成。 */
+    public static final int INFO_SEEK_COMPLETE = 2004;
+    /** 录制开始。 */
+    public static final int INFO_RECORDING_START = 2005;
+    /** 录制结束。 */
+    public static final int INFO_RECORDING_END = 2006;
+    /** 暂停。 */
+    public static final int INFO_PAUSED = 2007;
+    /** 停止。 */
+    public static final int INFO_STOPPED = 2008;
+    /** 首帧视频开始渲染。 */
+    public static final int INFO_VIDEO_RENDERING_START = 2009;
+    /** 音频开始输出。 */
+    public static final int INFO_AUDIO_RENDERING_START = 2010;
+    /** 缓冲开始。 */
+    public static final int INFO_BUFFERING_START = 2011;
+    /** 缓冲结束。 */
+    public static final int INFO_BUFFERING_END = 2012;
+
+    /** prepare 完成监听器。 */
+    public interface OnPreparedListener {
+        /** prepare 成功时回调。 */
+        void onPrepared(ECHPlayer player);
+    }
+
+    /** 播放完成监听器。 */
+    public interface OnCompletionListener {
+        /** 播放完成时回调。 */
+        void onCompletion(ECHPlayer player);
+    }
+
+    /** 错误监听器。 */
+    public interface OnErrorListener {
+        /** 出错时回调，返回 true 表示错误已处理。 */
+        boolean onError(ECHPlayer player, int errorCode, String message);
+    }
+
+    /** 信息监听器。 */
+    public interface OnInfoListener {
+        /** 播放器信息回调，返回 true 表示信息已处理。 */
+        boolean onInfo(ECHPlayer player, int infoCode, String message);
+    }
+
+    /** 缓冲进度监听器。 */
+    public interface OnBufferingUpdateListener {
+        /** 缓冲进度更新时回调。 */
+        void onBufferingUpdate(ECHPlayer player, int percent);
+    }
+
     /** RTSP 走 TCP 传输。 */
     public static final int RTSP_TRANSPORT_TCP = 0;
     /** RTSP 走 UDP 传输。 */
@@ -73,6 +149,22 @@ public class ECHPlayer implements AutoCloseable {
     private String lastStartResult = "";
     /** 当前 RTSP 传输方式。 */
     private int rtspTransport = RTSP_TRANSPORT_TCP;
+    /** prepare 完成监听器。 */
+    private OnPreparedListener onPreparedListener;
+    /** 播放完成监听器。 */
+    private OnCompletionListener onCompletionListener;
+    /** 错误监听器。 */
+    private OnErrorListener onErrorListener;
+    /** 信息监听器。 */
+    private OnInfoListener onInfoListener;
+    /** 缓冲进度监听器。 */
+    private OnBufferingUpdateListener onBufferingUpdateListener;
+    /** 首帧视频渲染事件是否已经发出。 */
+    private boolean videoRenderingStarted = false;
+    /** 音频输出事件是否已经发出。 */
+    private boolean audioRenderingStarted = false;
+    /** 播放完成事件是否已经发出。 */
+    private boolean completionDispatched = false;
 
     /** Java 音频输出实例。 */
     private AudioTrack audioTrack;
@@ -80,6 +172,31 @@ public class ECHPlayer implements AutoCloseable {
     /** 创建播放器并初始化 native 实例。 */
     public ECHPlayer() {
         nativeHandle = nativeInit();
+    }
+
+    /** 设置 prepare 成功监听器。 */
+    public synchronized void setOnPreparedListener(OnPreparedListener listener) {
+        onPreparedListener = listener;
+    }
+
+    /** 设置播放完成监听器。 */
+    public synchronized void setOnCompletionListener(OnCompletionListener listener) {
+        onCompletionListener = listener;
+    }
+
+    /** 设置错误监听器。 */
+    public synchronized void setOnErrorListener(OnErrorListener listener) {
+        onErrorListener = listener;
+    }
+
+    /** 设置信息监听器。 */
+    public synchronized void setOnInfoListener(OnInfoListener listener) {
+        onInfoListener = listener;
+    }
+
+    /** 设置缓冲进度监听器。 */
+    public synchronized void setOnBufferingUpdateListener(OnBufferingUpdateListener listener) {
+        onBufferingUpdateListener = listener;
     }
 
     /** 设置播放数据源。 */
@@ -96,6 +213,7 @@ public class ECHPlayer implements AutoCloseable {
         prepared = false;
         playing = false;
         paused = false;
+        resetPlaybackEventFlags();
     }
 
     /** 设置视频输出 Surface。 */
@@ -146,11 +264,21 @@ public class ECHPlayer implements AutoCloseable {
         checkReleased();
         requireState(State.INITIALIZED, State.STOPPED);
         state = State.PREPARING;
+        dispatchInfo(INFO_PREPARE_STARTED, "prepare started");
         lastPrepareResult = nativePrepare(nativeHandle);
         prepared = lastPrepareResult != null && lastPrepareResult.startsWith("prepare success");
         playing = false;
         paused = false;
         state = prepared ? State.PREPARED : State.ERROR;
+        if (prepared) {
+            dispatchInfo(INFO_PREPARED, lastPrepareResult);
+            dispatchBufferingUpdate(100);
+            if (onPreparedListener != null) {
+                onPreparedListener.onPrepared(this);
+            }
+        } else {
+            dispatchError(mapPrepareErrorCode(lastPrepareResult), lastPrepareResult);
+        }
         return lastPrepareResult;
     }
 
@@ -159,6 +287,7 @@ public class ECHPlayer implements AutoCloseable {
         checkReleased();
         requireState(State.INITIALIZED, State.STOPPED);
         state = State.PREPARING;
+        dispatchInfo(INFO_PREPARE_STARTED, "prepare started");
 
         Thread prepareThread = new Thread(() -> {
             synchronized (ECHPlayer.this) {
@@ -169,6 +298,15 @@ public class ECHPlayer implements AutoCloseable {
                     playing = false;
                     paused = false;
                     state = prepared ? State.PREPARED : State.ERROR;
+                    if (prepared) {
+                        dispatchInfo(INFO_PREPARED, lastPrepareResult);
+                        dispatchBufferingUpdate(100);
+                        if (onPreparedListener != null) {
+                            onPreparedListener.onPrepared(this);
+                        }
+                    } else {
+                        dispatchError(mapPrepareErrorCode(lastPrepareResult), lastPrepareResult);
+                    }
                 }
             }
         }, "ECHPlayer-Prepare");
@@ -198,8 +336,11 @@ public class ECHPlayer implements AutoCloseable {
             playing = true;
             paused = false;
             state = State.STARTED;
+            completionDispatched = false;
+            dispatchInfo(INFO_PLAY_STARTED, lastStartResult);
         } else {
             state = State.ERROR;
+            dispatchError(mapPlaybackErrorCode(lastStartResult), lastStartResult);
         }
         return lastStartResult;
     }
@@ -217,6 +358,7 @@ public class ECHPlayer implements AutoCloseable {
             playing = false;
             paused = true;
             state = State.PAUSED;
+            dispatchInfo(INFO_PAUSED, "pause");
         }
     }
 
@@ -232,6 +374,8 @@ public class ECHPlayer implements AutoCloseable {
             playing = true;
             paused = false;
             state = State.STARTED;
+            completionDispatched = false;
+            dispatchInfo(INFO_PLAY_STARTED, "resume");
         }
     }
 
@@ -247,6 +391,7 @@ public class ECHPlayer implements AutoCloseable {
             playing = false;
             paused = false;
             state = State.STOPPED;
+            dispatchInfo(INFO_STOPPED, "stop");
         }
     }
 
@@ -264,6 +409,7 @@ public class ECHPlayer implements AutoCloseable {
         lastPrepareResult = "";
         lastStartResult = "";
         rtspTransport = RTSP_TRANSPORT_TCP;
+        resetPlaybackEventFlags();
         state = State.IDLE;
     }
 
@@ -276,7 +422,13 @@ public class ECHPlayer implements AutoCloseable {
     public synchronized String seekTo(long positionMs) {
         checkReleased();
         requireState(State.PREPARED, State.STARTED, State.PAUSED, State.COMPLETED);
-        return nativeSeekToMs(nativeHandle, positionMs);
+        String result = nativeSeekToMs(nativeHandle, positionMs);
+        if (result != null && result.startsWith("seek success")) {
+            dispatchInfo(INFO_SEEK_COMPLETE, result);
+        } else {
+            dispatchError(ERROR_UNKNOWN, result);
+        }
+        return result;
     }
 
     /** 获取总时长。 */
@@ -298,7 +450,15 @@ public class ECHPlayer implements AutoCloseable {
     /** 按标准播放器命名获取当前播放位置。 */
     public synchronized long getCurrentPosition() {
         checkReleased();
-        return nativeGetCurrentPositionMs(nativeHandle);
+        long currentPosition = nativeGetCurrentPositionMs(nativeHandle);
+        long duration = nativeGetDurationMs(nativeHandle);
+        dispatchVideoRenderingStartIfReady();
+        if (state == State.STARTED
+                && duration > 0
+                && currentPosition >= Math.max(0, duration - 500)) {
+            dispatchCompletion();
+        }
+        return currentPosition;
     }
 
     /** 返回当前是否处于播放中。 */
@@ -346,13 +506,23 @@ public class ECHPlayer implements AutoCloseable {
     /** 开始录制当前播放中的流。 */
     public synchronized String startRecording(String outputPath) {
         checkReleased();
-        return nativeStartRecording(nativeHandle, outputPath);
+        String result = nativeStartRecording(nativeHandle, outputPath);
+        if (result != null && result.startsWith("recording started")) {
+            dispatchInfo(INFO_RECORDING_START, result);
+        } else {
+            dispatchError(ERROR_RECORD_FAILED, result);
+        }
+        return result;
     }
 
     /** 停止录制当前播放中的流。 */
     public synchronized String stopRecording() {
         checkReleased();
-        return nativeStopRecording(nativeHandle);
+        String result = nativeStopRecording(nativeHandle);
+        if (result != null && result.startsWith("recording stopped")) {
+            dispatchInfo(INFO_RECORDING_END, result);
+        }
+        return result;
     }
 
     /** 返回当前是否正在录制。 */
@@ -413,6 +583,10 @@ public class ECHPlayer implements AutoCloseable {
         );
 
         audioTrack.play();
+        if (!audioRenderingStarted) {
+            audioRenderingStarted = true;
+            dispatchInfo(INFO_AUDIO_RENDERING_START, "audio rendering started");
+        }
     }
 
     /** Native 回调：写入一段 PCM 数据到 AudioTrack。 */
@@ -457,7 +631,106 @@ public class ECHPlayer implements AutoCloseable {
             }
         }
 
-        throw new IllegalStateException("Invalid player state: " + state);
+        String message = "Invalid player state: " + state;
+        dispatchError(ERROR_INVALID_STATE, message);
+        throw new IllegalStateException(message);
+    }
+
+    /** 分发错误回调。 */
+    private void dispatchError(int errorCode, String message) {
+        if (onErrorListener != null) {
+            onErrorListener.onError(this, errorCode, message == null ? "" : message);
+        }
+    }
+
+    /** 分发信息回调。 */
+    private void dispatchInfo(int infoCode, String message) {
+        if (onInfoListener != null) {
+            onInfoListener.onInfo(this, infoCode, message == null ? "" : message);
+        }
+    }
+
+    /** 分发播放完成回调。 */
+    private void dispatchCompletion() {
+        if (completionDispatched) {
+            return;
+        }
+
+        completionDispatched = true;
+        state = State.COMPLETED;
+        playing = false;
+        paused = false;
+        if (onCompletionListener != null) {
+            onCompletionListener.onCompletion(this);
+        }
+    }
+
+    /** 分发缓冲进度回调。 */
+    private void dispatchBufferingUpdate(int percent) {
+        if (onBufferingUpdateListener != null) {
+            onBufferingUpdateListener.onBufferingUpdate(this, percent);
+        }
+    }
+
+    /** 在首帧解码后分发视频渲染开始事件。 */
+    private void dispatchVideoRenderingStartIfReady() {
+        if (videoRenderingStarted || state != State.STARTED) {
+            return;
+        }
+
+        int[] frameSize = nativeGetCurrentFrameSize(nativeHandle);
+        int width = frameSize != null && frameSize.length >= 2 ? frameSize[0] : 0;
+        int height = frameSize != null && frameSize.length >= 2 ? frameSize[1] : 0;
+        if (width > 0 && height > 0) {
+            videoRenderingStarted = true;
+            dispatchInfo(INFO_VIDEO_RENDERING_START, "video rendering started");
+        }
+    }
+
+    /** 重置单次播放过程里的事件标记。 */
+    private void resetPlaybackEventFlags() {
+        videoRenderingStarted = false;
+        audioRenderingStarted = false;
+        completionDispatched = false;
+    }
+
+    /** 根据 prepare 结果映射错误码。 */
+    private int mapPrepareErrorCode(String result) {
+        if (result == null) {
+            return ERROR_UNKNOWN;
+        }
+        if (result.contains("avformat_open_input")) {
+            String lowerResult = result.toLowerCase();
+            if (result.contains("401 Unauthorized")
+                    || lowerResult.contains("unauthorized")
+                    || result.contains("鉴权失败")) {
+                return ERROR_RTSP_AUTH_FAILED;
+            }
+            if (result.contains("Connection timed out")
+                    || lowerResult.contains("timed out")
+                    || lowerResult.contains("timeout")) {
+                return ERROR_NETWORK_TIMEOUT;
+            }
+            return ERROR_OPEN_INPUT_FAILED;
+        }
+        if (result.contains("avformat_find_stream_info")) {
+            return ERROR_STREAM_INFO_FAILED;
+        }
+        if (result.contains("no video stream")) {
+            return ERROR_NO_VIDEO_STREAM;
+        }
+        return ERROR_UNKNOWN;
+    }
+
+    /** 根据播放结果映射错误码。 */
+    private int mapPlaybackErrorCode(String result) {
+        if (result == null) {
+            return ERROR_UNKNOWN;
+        }
+        if (result.contains("surface is null")) {
+            return ERROR_RENDER_SURFACE_INVALID;
+        }
+        return ERROR_UNKNOWN;
     }
 
     /** 创建 NativePlayer 并返回指针。 */

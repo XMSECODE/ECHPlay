@@ -317,6 +317,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         player = new ECHPlayer();
+        bindPlayerCallbacks(player);
         currentRecordingPath = null;
         durationMs = 0;
         progressSeekBar.setProgress(0);
@@ -333,6 +334,7 @@ public class MainActivity extends AppCompatActivity {
         text.append("FFmpeg version: ");
         text.append(player.getFFmpegVersion());
         text.append("\n\n");
+        sampleText.setText(text.toString());
 
         int playMode = modeGroup.getCheckedRadioButtonId() == R.id.modeLocalButton ? MODE_LOCAL : MODE_RTSP;
         try {
@@ -346,30 +348,131 @@ public class MainActivity extends AppCompatActivity {
             }
 
             String prepareInfo = player.prepare();
-            text.append(prepareInfo);
-            text.append("\n\n");
+            appendLog(prepareInfo);
             durationMs = Math.max(0, player.getDuration());
             durationTimeText.setText(formatTime(durationMs));
 
             String playInfo = player.start();
-            text.append(playInfo);
-            text.append("\nstate: ");
-            text.append(player.getState());
+            appendLog(playInfo + "\nstate: " + player.getState());
             startProgressUpdates();
             updateRecordButtonState();
 
         } catch (IOException e) {
-            text.append("没有找到可播放的数据源。\n\n");
+            StringBuilder errorText = new StringBuilder();
+            errorText.append("没有找到可播放的数据源。\n\n");
             if (playMode == MODE_LOCAL) {
-                text.append("请通过选择文件按钮选取本地视频文件。\n\n");
+                errorText.append("请通过选择文件按钮选取本地视频文件。\n\n");
             } else {
-                text.append("可以输入 rtsp:// 地址\n\n");
+                errorText.append("可以输入 rtsp:// 地址\n\n");
             }
-            text.append("error: ");
-            text.append(e.getMessage());
+            errorText.append("error: ");
+            errorText.append(e.getMessage());
+            appendLog(errorText.toString());
         }
+    }
 
-        sampleText.setText(text.toString());
+    /** 绑定播放器回调并把事件展示到 Demo 日志。 */
+    private void bindPlayerCallbacks(ECHPlayer targetPlayer) {
+        targetPlayer.setOnPreparedListener(callbackPlayer ->
+                postToUi(() -> appendLog("回调 OnPrepared\nstate: " + callbackPlayer.getState())));
+
+        targetPlayer.setOnCompletionListener(callbackPlayer ->
+                postToUi(() -> {
+                    stopProgressUpdates();
+                    updateRecordButtonState();
+                    appendLog("回调 OnCompletion\nstate: " + callbackPlayer.getState());
+                }));
+
+        targetPlayer.setOnErrorListener((callbackPlayer, errorCode, message) -> {
+            postToUi(() -> appendLog(
+                    "错误码 " + errorCode + ": " + describeErrorCode(errorCode)
+                            + "\nmessage: " + message
+                            + "\nstate: " + callbackPlayer.getState()
+            ));
+            return true;
+        });
+
+        targetPlayer.setOnInfoListener((callbackPlayer, infoCode, message) -> {
+            postToUi(() -> {
+                updateRecordButtonState();
+                appendLog(
+                        "信息码 " + infoCode + ": " + describeInfoCode(infoCode)
+                                + "\nmessage: " + message
+                                + "\nstate: " + callbackPlayer.getState()
+                );
+            });
+            return true;
+        });
+
+        targetPlayer.setOnBufferingUpdateListener((callbackPlayer, percent) ->
+                postToUi(() -> appendLog("缓冲进度: " + percent + "%")));
+    }
+
+    /** 把任务安全切回主线程执行。 */
+    private void postToUi(Runnable action) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            action.run();
+        } else {
+            uiHandler.post(action);
+        }
+    }
+
+    /** 把播放器错误码转换成中文说明。 */
+    private String describeErrorCode(int errorCode) {
+        switch (errorCode) {
+            case ECHPlayer.ERROR_OPEN_INPUT_FAILED:
+                return "打开输入失败";
+            case ECHPlayer.ERROR_STREAM_INFO_FAILED:
+                return "读取流信息失败";
+            case ECHPlayer.ERROR_NO_VIDEO_STREAM:
+                return "没有找到视频流";
+            case ECHPlayer.ERROR_DECODER_OPEN_FAILED:
+                return "打开解码器失败";
+            case ECHPlayer.ERROR_NETWORK_TIMEOUT:
+                return "网络读取超时";
+            case ECHPlayer.ERROR_RTSP_AUTH_FAILED:
+                return "RTSP 鉴权失败";
+            case ECHPlayer.ERROR_RENDER_SURFACE_INVALID:
+                return "渲染 Surface 无效";
+            case ECHPlayer.ERROR_RECORD_FAILED:
+                return "录制失败";
+            case ECHPlayer.ERROR_INVALID_STATE:
+                return "播放器状态不允许当前操作";
+            default:
+                return "未知错误";
+        }
+    }
+
+    /** 把播放器信息码转换成中文说明。 */
+    private String describeInfoCode(int infoCode) {
+        switch (infoCode) {
+            case ECHPlayer.INFO_PREPARE_STARTED:
+                return "开始准备数据源";
+            case ECHPlayer.INFO_PREPARED:
+                return "数据源准备完成";
+            case ECHPlayer.INFO_PLAY_STARTED:
+                return "播放开始";
+            case ECHPlayer.INFO_SEEK_COMPLETE:
+                return "seek 完成";
+            case ECHPlayer.INFO_RECORDING_START:
+                return "录制开始";
+            case ECHPlayer.INFO_RECORDING_END:
+                return "录制结束";
+            case ECHPlayer.INFO_PAUSED:
+                return "播放暂停";
+            case ECHPlayer.INFO_STOPPED:
+                return "播放停止";
+            case ECHPlayer.INFO_VIDEO_RENDERING_START:
+                return "首帧视频开始渲染";
+            case ECHPlayer.INFO_AUDIO_RENDERING_START:
+                return "音频开始输出";
+            case ECHPlayer.INFO_BUFFERING_START:
+                return "缓冲开始";
+            case ECHPlayer.INFO_BUFFERING_END:
+                return "缓冲结束";
+            default:
+                return "普通播放信息";
+        }
     }
 
     /** 解析当前应该使用的数据源。 */
