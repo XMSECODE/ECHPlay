@@ -2,6 +2,21 @@ plugins {
     alias(libs.plugins.android.library)
 }
 
+// 候选 ABI 列表。armeabi-v7a 已预留，补齐对应 FFmpeg so 后会自动进入打包。
+def candidateNativeAbis = ['arm64-v8a', 'armeabi-v7a']
+// 播放器依赖的 FFmpeg 动态库，只有全部存在时才启用对应 ABI。
+def requiredFfmpegLibraries = ['avcodec', 'avformat', 'avutil', 'swresample', 'swscale']
+// 当前真实可打包的 ABI，避免缺少 so 时 CMake 误编译失败。
+def enabledNativeAbis = candidateNativeAbis.findAll { abiName ->
+    requiredFfmpegLibraries.every { libraryName ->
+        file("src/main/jniLibs/${abiName}/lib${libraryName}.so").exists()
+    }
+}
+
+if (enabledNativeAbis.isEmpty()) {
+    throw new GradleException("echplayer 至少需要一组完整 FFmpeg so 才能构建")
+}
+
 android {
     namespace 'com.echplay.player'
     compileSdk 36
@@ -14,7 +29,9 @@ android {
         consumerProguardFiles "consumer-rules.pro"
 
         ndk {
-            abiFilters 'arm64-v8a'
+            enabledNativeAbis.each { abiName ->
+                abiFilters abiName
+            }
         }
 
         externalNativeBuild {
