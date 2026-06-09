@@ -130,6 +130,8 @@ private:
     std::mutex packetQueueMutex;
     /** 音视频包队列条件变量。 */
     std::condition_variable packetQueueCond;
+    /** seek 操作互斥锁，避免连续 seek 并发改动解封装状态。 */
+    std::mutex seekMutex;
     /** 视频包队列。 */
     std::deque<struct AVPacket *> videoPacketQueue;
     /** 音频包队列。 */

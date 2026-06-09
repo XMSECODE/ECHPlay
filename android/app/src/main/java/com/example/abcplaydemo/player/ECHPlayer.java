@@ -28,6 +28,8 @@ public class ECHPlayer implements AutoCloseable {
         PAUSED,
         /** 已停止。 */
         STOPPED,
+        /** 正在 seek。 */
+        SEEKING,
         /** 播放完成。 */
         COMPLETED,
         /** 出错。 */
@@ -175,6 +177,8 @@ public class ECHPlayer implements AutoCloseable {
     private boolean audioRenderingStarted = false;
     /** 播放完成事件是否已经发出。 */
     private boolean completionDispatched = false;
+    /** 当前是否正在执行 seek。 */
+    private boolean seeking = false;
 
     /** Java 音频输出实例。 */
     private AudioTrack audioTrack;
@@ -438,13 +442,35 @@ public class ECHPlayer implements AutoCloseable {
     public synchronized String seekTo(long positionMs) {
         checkReleased();
         requireState(State.PREPARED, State.STARTED, State.PAUSED, State.COMPLETED);
+
+        if (seeking) {
+            dispatchError(ERROR_INVALID_STATE, "seek ignored: already seeking");
+            return "seek ignored: already seeking";
+        }
+
+        State stateBeforeSeek = state;
+        boolean wasPlaying = playing;
+        boolean wasPaused = paused;
+        seeking = true;
+        state = State.SEEKING;
         String result = nativeSeekToMs(nativeHandle, positionMs);
+        seeking = false;
+
         if (result != null && result.startsWith("seek success")) {
+            playing = wasPlaying;
+            paused = wasPaused;
+            state = wasPlaying ? State.STARTED : (wasPaused ? State.PAUSED : State.PREPARED);
+            completionDispatched = false;
             dispatchInfo(INFO_SEEK_COMPLETE, result);
-        } else if (result != null && result.contains("not seekable")) {
-            dispatchError(ERROR_STREAM_NOT_SEEKABLE, result);
         } else {
-            dispatchError(ERROR_UNKNOWN, result);
+            playing = wasPlaying;
+            paused = wasPaused;
+            state = stateBeforeSeek;
+            if (result != null && result.contains("not seekable")) {
+                dispatchError(ERROR_STREAM_NOT_SEEKABLE, result);
+            } else {
+                dispatchError(ERROR_UNKNOWN, result);
+            }
         }
         return result;
     }
@@ -735,6 +761,7 @@ public class ECHPlayer implements AutoCloseable {
         videoRenderingStarted = false;
         audioRenderingStarted = false;
         completionDispatched = false;
+        seeking = false;
     }
 
     /** 根据 prepare 结果映射错误码。 */

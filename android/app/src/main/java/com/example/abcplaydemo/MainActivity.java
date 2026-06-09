@@ -231,6 +231,10 @@ public class MainActivity extends AppCompatActivity {
                 userSeeking = false;
 
                 if (player != null && durationMs > 0) {
+                    if (player.getState() == ECHPlayer.State.SEEKING) {
+                        appendLog("seek ignored: 正在处理上一次 seek");
+                        return;
+                    }
                     if (!player.isSeekable()) {
                         appendLog("seek ignored: 当前媒体不支持 seek");
                         progressSeekBar.setProgress(0);

@@ -429,6 +429,8 @@ void NativePlayer::stop() {
 
 /** 跳转到指定毫秒位置。 */
 std::string NativePlayer::seekToMs(int64_t positionMs) {
+    std::lock_guard<std::mutex> seekLock(seekMutex);
+
     if (!prepared || formatContext == nullptr) {
         return "seek failed: player is not prepared";
     }
@@ -456,6 +458,7 @@ std::string NativePlayer::seekToMs(int64_t positionMs) {
         stopRequested = false;
         paused = startPaused;
         demuxFinished = false;
+        buffering = false;
         playing = true;
         activePlaybackWorkers = audioStreamIndex >= 0 ? 2 : 1;
         audioClockUs = audioStreamIndex >= 0 ? 0 : std::numeric_limits<int64_t>::min();
@@ -489,6 +492,7 @@ std::string NativePlayer::seekToMs(int64_t positionMs) {
         clearPacketQueues();
         demuxFinished = false;
         activePlaybackWorkers = 0;
+        buffering = false;
         playing = false;
     }
 
@@ -532,6 +536,7 @@ std::string NativePlayer::seekToMs(int64_t positionMs) {
 
     audioClockUs = audioStreamIndex >= 0 ? 0 : std::numeric_limits<int64_t>::min();
     demuxFinished = false;
+    buffering = false;
     stopRequested = false;
 
     if (wasPlaying) {
