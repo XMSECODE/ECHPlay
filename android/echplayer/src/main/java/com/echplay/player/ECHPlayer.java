@@ -168,6 +168,10 @@ public class ECHPlayer implements AutoCloseable {
     public static final int RTSP_TRANSPORT_TCP = 0;
     /** RTSP 走 UDP 传输。 */
     public static final int RTSP_TRANSPORT_UDP = 1;
+    /** Surface 渲染保持比例居中。 */
+    public static final int SURFACE_SCALE_TYPE_FIT_CENTER = 0;
+    /** Surface 渲染拉伸填满。 */
+    public static final int SURFACE_SCALE_TYPE_FILL = 1;
     /** FFmpeg format 层 option 分类。 */
     public static final int OPTION_CATEGORY_FORMAT = 1;
     /** 播放器自身 option 分类。 */
@@ -298,6 +302,15 @@ public class ECHPlayer implements AutoCloseable {
     public synchronized void setSurface(Surface surface) {
         checkReleased();
         nativeSetSurface(nativeHandle, surface);
+    }
+
+    /** 设置 NativeWindow 兼容渲染路径的 Surface 缩放方式。 */
+    public synchronized void setSurfaceScaleType(int scaleType) {
+        checkReleased();
+        int nativeScaleType = scaleType == SURFACE_SCALE_TYPE_FILL
+                ? SURFACE_SCALE_TYPE_FILL
+                : SURFACE_SCALE_TYPE_FIT_CENTER;
+        nativeSetSurfaceScaleType(nativeHandle, nativeScaleType);
     }
 
     /** 设置 RTSP 传输方式。 */
@@ -1032,6 +1045,9 @@ public class ECHPlayer implements AutoCloseable {
 
     /** 设置 NativePlayer Surface。 */
     private native void nativeSetSurface(long nativeHandle, Surface surface);
+
+    /** 设置 NativePlayer 的 Surface 缩放方式。 */
+    private native void nativeSetSurfaceScaleType(long nativeHandle, int scaleType);
 
     /** 设置 NativePlayer 的 RTSP 传输方式。 */
     private native void nativeSetRtspTransport(long nativeHandle, int transport);

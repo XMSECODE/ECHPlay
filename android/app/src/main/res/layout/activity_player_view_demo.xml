@@ -54,6 +54,43 @@
 
     </RadioGroup>
 
+    <RadioGroup
+        android:id="@+id/playerViewScaleGroup"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="8dp"
+        android:orientation="horizontal">
+
+        <RadioButton
+            android:id="@+id/playerViewScaleFitButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:checked="true"
+            android:text="fit" />
+
+        <RadioButton
+            android:id="@+id/playerViewScaleCropButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:text="crop" />
+
+        <RadioButton
+            android:id="@+id/playerViewScaleFillButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:text="fill" />
+
+        <RadioButton
+            android:id="@+id/playerViewScaleOriginalButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:text="original" />
+
+    </RadioGroup>
+
     <com.echplay.player.ECHPlayerView
         android:id="@+id/playerView"
         android:layout_width="match_parent"

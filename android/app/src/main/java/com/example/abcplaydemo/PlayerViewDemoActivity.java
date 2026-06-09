@@ -22,6 +22,8 @@ public class PlayerViewDemoActivity extends AppCompatActivity {
     private EditText urlInput;
     /** RTSP 传输方式组选框。 */
     private RadioGroup transportGroup;
+    /** 画面比例模式组选框。 */
+    private RadioGroup scaleTypeGroup;
     /** 日志文本。 */
     private TextView logText;
 
@@ -33,13 +35,16 @@ public class PlayerViewDemoActivity extends AppCompatActivity {
         playerView = findViewById(R.id.playerView);
         urlInput = findViewById(R.id.playerViewUrlInput);
         transportGroup = findViewById(R.id.playerViewTransportGroup);
+        scaleTypeGroup = findViewById(R.id.playerViewScaleGroup);
         logText = findViewById(R.id.playerViewLogText);
         Button setPathButton = findViewById(R.id.playerViewSetPathButton);
 
         playerView.setEventListener(this::appendLog);
         setPathButton.setOnClickListener(view -> applyPlayerViewSource());
         transportGroup.setOnCheckedChangeListener((group, checkedId) -> applyRtspTransport());
+        scaleTypeGroup.setOnCheckedChangeListener((group, checkedId) -> applyScaleType());
 
+        applyScaleType();
         applyPlayerViewSource();
     }
 
@@ -57,6 +62,27 @@ public class PlayerViewDemoActivity extends AppCompatActivity {
                 ? ECHPlayer.RTSP_TRANSPORT_UDP
                 : ECHPlayer.RTSP_TRANSPORT_TCP;
         playerView.setRtspTransport(transport);
+    }
+
+    /** 应用当前画面比例模式。 */
+    private void applyScaleType() {
+        int checkedId = scaleTypeGroup.getCheckedRadioButtonId();
+        int scaleType = ECHPlayerView.SCALE_TYPE_FIT_CENTER;
+        String scaleText = "fitCenter";
+
+        if (checkedId == R.id.playerViewScaleCropButton) {
+            scaleType = ECHPlayerView.SCALE_TYPE_CENTER_CROP;
+            scaleText = "centerCrop";
+        } else if (checkedId == R.id.playerViewScaleFillButton) {
+            scaleType = ECHPlayerView.SCALE_TYPE_FILL;
+            scaleText = "fill";
+        } else if (checkedId == R.id.playerViewScaleOriginalButton) {
+            scaleType = ECHPlayerView.SCALE_TYPE_ORIGINAL;
+            scaleText = "original";
+        }
+
+        playerView.setScaleType(scaleType);
+        appendLog("scaleType: " + scaleText);
     }
 
     /** 追加页面日志。 */

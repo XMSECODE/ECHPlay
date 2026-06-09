@@ -51,6 +51,7 @@ NativePlayer::NativePlayer(JavaVM *vm, JNIEnv *env, jobject javaPlayer)
           demuxFinished(false),
           activePlaybackWorkers(0),
           audioClockUs(std::numeric_limits<int64_t>::min()),
+          surfaceScaleType(0),
           swsContextCache(nullptr),
           captureSwsContextCache(nullptr),
           rgbaFrameCache(nullptr),
@@ -170,6 +171,12 @@ void NativePlayer::setSurface(ANativeWindow *window) {
     } else {
         ECH_LOGI("setSurface null");
     }
+}
+
+/** 设置 Surface 渲染缩放方式，0 保持比例居中，1 拉伸填满。 */
+void NativePlayer::setSurfaceScaleType(int scaleType) {
+    surfaceScaleType = scaleType == 1 ? 1 : 0;
+    ECH_LOGI("setSurfaceScaleType: %d", surfaceScaleType.load());
 }
 
 /** 设置 RTSP 传输方式，0 为 TCP，1 为 UDP。 */
@@ -995,20 +1002,26 @@ bool NativePlayer::renderFrameToSurface(AVFrame *frame) {
     }
     updateVideoSize(videoWidth, videoHeight);
 
-    float scaleX = static_cast<float>(surfaceWidth) / static_cast<float>(videoWidth);
-    float scaleY = static_cast<float>(surfaceHeight) / static_cast<float>(videoHeight);
-    float scale = std::min(scaleX, scaleY);
+    int renderWidth = surfaceWidth;
+    int renderHeight = surfaceHeight;
+    int offsetX = 0;
+    int offsetY = 0;
 
-    int renderWidth = static_cast<int>(videoWidth * scale);
-    int renderHeight = static_cast<int>(videoHeight * scale);
+    if (surfaceScaleType.load() != 1) {
+        float scaleX = static_cast<float>(surfaceWidth) / static_cast<float>(videoWidth);
+        float scaleY = static_cast<float>(surfaceHeight) / static_cast<float>(videoHeight);
+        float scale = std::min(scaleX, scaleY);
+
+        renderWidth = static_cast<int>(videoWidth * scale);
+        renderHeight = static_cast<int>(videoHeight * scale);
+        offsetX = (surfaceWidth - renderWidth) / 2;
+        offsetY = (surfaceHeight - renderHeight) / 2;
+    }
 
     if (renderWidth <= 0 || renderHeight <= 0) {
         ANativeWindow_release(window);
         return false;
     }
-
-    int offsetX = (surfaceWidth - renderWidth) / 2;
-    int offsetY = (surfaceHeight - renderHeight) / 2;
 
     int ret = ANativeWindow_setBuffersGeometry(
             window,

@@ -92,6 +92,20 @@ Java_com_echplay_player_ECHPlayer_nativeSetSurface(
 
 extern "C"
 JNIEXPORT void JNICALL
+Java_com_echplay_player_ECHPlayer_nativeSetSurfaceScaleType(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle,
+        jint scaleType) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player != nullptr) {
+        player->setSurfaceScaleType(static_cast<int>(scaleType));
+    }
+}
+
+extern "C"
+JNIEXPORT void JNICALL
 Java_com_echplay_player_ECHPlayer_nativeSetRtspTransport(
         JNIEnv *env,
         jobject thiz,

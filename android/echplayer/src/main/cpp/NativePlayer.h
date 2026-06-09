@@ -33,6 +33,9 @@ public:
     /** 设置视频渲染目标 Surface。 */
     void setSurface(ANativeWindow *window);
 
+    /** 设置 Surface 渲染缩放方式，0 保持比例居中，1 拉伸填满。 */
+    void setSurfaceScaleType(int scaleType);
+
     /** 设置 RTSP 传输方式，0 为 TCP，1 为 UDP。 */
     void setRtspTransport(int transport);
 
@@ -124,6 +127,8 @@ private:
     std::atomic<int> activePlaybackWorkers;
     /** 当前音频主时钟，单位微秒。 */
     std::atomic<int64_t> audioClockUs;
+    /** Surface 渲染缩放方式，0 保持比例居中，1 拉伸填满。 */
+    std::atomic<int> surfaceScaleType;
 
     /** 解封装线程。 */
     std::thread demuxThread;
