@@ -11,6 +11,8 @@
 #include <thread>
 #include <vector>
 
+#include "GlVideoRenderer.h"
+
 struct AVFormatContext;
 struct ANativeWindow;
 struct AVFrame;
@@ -129,6 +131,12 @@ private:
     std::atomic<int64_t> audioClockUs;
     /** Surface 渲染缩放方式，0 保持比例居中，1 拉伸填满。 */
     std::atomic<int> surfaceScaleType;
+    /** OpenGL ES 视频渲染器。 */
+    GlVideoRenderer glVideoRenderer;
+    /** OpenGL 渲染器互斥锁，避免 Surface 释放和渲染并发访问 EGL。 */
+    std::mutex glRendererMutex;
+    /** OpenGL 渲染是否已经失败，失败后回退 NativeWindow。 */
+    std::atomic<bool> glRenderFailed;
 
     /** 解封装线程。 */
     std::thread demuxThread;
@@ -249,6 +257,15 @@ private:
 
     /** 把解码后的视频帧渲染到 Surface。 */
     bool renderFrameToSurface(AVFrame *frame);
+
+    /** 尝试用 OpenGL ES 三纹理渲染 YUV420P 视频帧。 */
+    bool tryRenderFrameWithOpenGL(ANativeWindow *window, AVFrame *frame);
+
+    /** 用 NativeWindow RGBA 兼容路径渲染视频帧。 */
+    bool renderFrameWithNativeWindow(ANativeWindow *window, AVFrame *frame);
+
+    /** 更新最近一帧截图缓存。 */
+    bool updateCaptureFrameSnapshot(AVFrame *frame);
 
     /** 确保渲染缓存与当前帧尺寸匹配。 */
     bool ensureRenderCache(

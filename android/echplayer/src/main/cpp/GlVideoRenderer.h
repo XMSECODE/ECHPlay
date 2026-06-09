@@ -30,7 +30,7 @@ public:
     /** 渲染一帧黑色画面，用于验证 EGL swap 链路。 */
     std::string renderBlackFrame();
 
-    /** 上传并渲染一帧 YUV420P 视频帧。 */
+    /** 上传并渲染一帧 YUV420P 视频帧，scaleType 为 0 保持比例，1 拉伸填满。 */
     std::string renderYuv420PFrame(
             const uint8_t *yData,
             int yLineSize,
@@ -39,8 +39,12 @@ public:
             const uint8_t *vData,
             int vLineSize,
             int frameWidth,
-            int frameHeight
+            int frameHeight,
+            int scaleType
     );
+
+    /** 判断当前 EGL Surface 是否匹配指定 Surface 尺寸。 */
+    bool matchesSurfaceSize(int width, int height) const;
 
     /** 释放 EGL、shader、纹理和 Surface 相关资源。 */
     void release();

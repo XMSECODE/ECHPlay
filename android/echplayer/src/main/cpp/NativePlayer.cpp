@@ -52,6 +52,8 @@ NativePlayer::NativePlayer(JavaVM *vm, JNIEnv *env, jobject javaPlayer)
           activePlaybackWorkers(0),
           audioClockUs(std::numeric_limits<int64_t>::min()),
           surfaceScaleType(0),
+          glVideoRenderer(),
+          glRenderFailed(false),
           swsContextCache(nullptr),
           captureSwsContextCache(nullptr),
           rgbaFrameCache(nullptr),
@@ -153,6 +155,11 @@ void NativePlayer::setDataSource(const std::string &source) {
 /** 设置渲染输出 Surface。 */
 void NativePlayer::setSurface(ANativeWindow *window) {
     std::lock_guard<std::mutex> lock(windowMutex);
+    {
+        std::lock_guard<std::mutex> glLock(glRendererMutex);
+        glVideoRenderer.release();
+        glRenderFailed = false;
+    }
 
     if (nativeWindow != nullptr) {
         ANativeWindow_release(nativeWindow);
@@ -437,6 +444,11 @@ void NativePlayer::stop() {
 
     clearPacketQueues();
     clearRenderCache();
+    {
+        std::lock_guard<std::mutex> glLock(glRendererMutex);
+        glVideoRenderer.release();
+        glRenderFailed = false;
+    }
     playing = false;
     demuxFinished = false;
     activePlaybackWorkers = 0;
@@ -966,7 +978,7 @@ void NativePlayer::decodeLoop() {
     markPlaybackWorkerFinished();
 }
 
-/** 把解码后视频帧按 fitCenter 方式渲染到 Surface。 */
+/** 把解码后视频帧渲染到 Surface。 */
 bool NativePlayer::renderFrameToSurface(AVFrame *frame) {
     if (frame == nullptr) {
         return false;
@@ -1001,6 +1013,86 @@ bool NativePlayer::renderFrameToSurface(AVFrame *frame) {
         return false;
     }
     updateVideoSize(videoWidth, videoHeight);
+    updateCaptureFrameSnapshot(frame);
+
+    bool rendered = tryRenderFrameWithOpenGL(window, frame);
+    if (!rendered) {
+        rendered = renderFrameWithNativeWindow(window, frame);
+    }
+
+    ANativeWindow_release(window);
+    return rendered;
+}
+
+/** 尝试用 OpenGL ES 三纹理渲染 YUV420P 视频帧。 */
+bool NativePlayer::tryRenderFrameWithOpenGL(ANativeWindow *window, AVFrame *frame) {
+    if (window == nullptr || frame == nullptr || glRenderFailed.load()) {
+        return false;
+    }
+
+    if (frame->format != AV_PIX_FMT_YUV420P) {
+        return false;
+    }
+
+    int surfaceWidth = ANativeWindow_getWidth(window);
+    int surfaceHeight = ANativeWindow_getHeight(window);
+    if (surfaceWidth <= 0 || surfaceHeight <= 0) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> glLock(glRendererMutex);
+
+    if (!glVideoRenderer.matchesSurfaceSize(surfaceWidth, surfaceHeight)) {
+        std::string initResult = glVideoRenderer.initialize(window);
+        if (!glVideoRenderer.isInitialized()) {
+            ECH_LOGE("OpenGL renderer init failed: %s", initResult.c_str());
+            glVideoRenderer.release();
+            glRenderFailed = true;
+            return false;
+        }
+    }
+
+    std::string renderResult = glVideoRenderer.renderYuv420PFrame(
+            frame->data[0],
+            frame->linesize[0],
+            frame->data[1],
+            frame->linesize[1],
+            frame->data[2],
+            frame->linesize[2],
+            frame->width,
+            frame->height,
+            surfaceScaleType.load()
+    );
+
+    if (!renderResult.empty() && renderResult.rfind("OpenGL YUV frame rendered", 0) == 0) {
+        return true;
+    }
+
+    ECH_LOGE("OpenGL YUV render failed: %s", renderResult.c_str());
+    glVideoRenderer.release();
+    glRenderFailed = true;
+    return false;
+}
+
+/** 用 NativeWindow RGBA 兼容路径渲染视频帧。 */
+bool NativePlayer::renderFrameWithNativeWindow(ANativeWindow *window, AVFrame *frame) {
+    if (window == nullptr || frame == nullptr) {
+        return false;
+    }
+
+    int surfaceWidth = ANativeWindow_getWidth(window);
+    int surfaceHeight = ANativeWindow_getHeight(window);
+
+    if (surfaceWidth <= 0 || surfaceHeight <= 0) {
+        return false;
+    }
+
+    int videoWidth = frame->width;
+    int videoHeight = frame->height;
+
+    if (videoWidth <= 0 || videoHeight <= 0) {
+        return false;
+    }
 
     int renderWidth = surfaceWidth;
     int renderHeight = surfaceHeight;
@@ -1019,7 +1111,6 @@ bool NativePlayer::renderFrameToSurface(AVFrame *frame) {
     }
 
     if (renderWidth <= 0 || renderHeight <= 0) {
-        ANativeWindow_release(window);
         return false;
     }
 
@@ -1031,19 +1122,13 @@ bool NativePlayer::renderFrameToSurface(AVFrame *frame) {
     );
 
     if (ret < 0) {
-        ANativeWindow_release(window);
         return false;
     }
 
     if (!ensureRenderCache(videoWidth, videoHeight, frame->format, renderWidth, renderHeight)) {
-        ANativeWindow_release(window);
         return false;
     }
-
-    if (!ensureCaptureCache(videoWidth, videoHeight, frame->format)) {
-        ANativeWindow_release(window);
-        return false;
-    }
+    updateCaptureFrameSnapshot(frame);
 
     sws_scale(
             swsContextCache,
@@ -1055,27 +1140,10 @@ bool NativePlayer::renderFrameToSurface(AVFrame *frame) {
             rgbaFrameCache->linesize
     );
 
-    {
-        std::lock_guard<std::mutex> captureLock(captureFrameMutex);
-        sws_scale(
-                captureSwsContextCache,
-                frame->data,
-                frame->linesize,
-                0,
-                videoHeight,
-                captureFrameCache->data,
-                captureFrameCache->linesize
-        );
-        captureFrameWidth = videoWidth;
-        captureFrameHeight = videoHeight;
-        captureFrameRgba = captureFrameBufferCache;
-    }
-
     ANativeWindow_Buffer windowBuffer;
     ret = ANativeWindow_lock(window, &windowBuffer, nullptr);
 
     if (ret < 0) {
-        ANativeWindow_release(window);
         return false;
     }
 
@@ -1100,8 +1168,32 @@ bool NativePlayer::renderFrameToSurface(AVFrame *frame) {
 
     ANativeWindow_unlockAndPost(window);
 
-    ANativeWindow_release(window);
+    return true;
+}
 
+/** 更新最近一帧截图缓存。 */
+bool NativePlayer::updateCaptureFrameSnapshot(AVFrame *frame) {
+    if (frame == nullptr || frame->width <= 0 || frame->height <= 0) {
+        return false;
+    }
+
+    if (!ensureCaptureCache(frame->width, frame->height, frame->format)) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> captureLock(captureFrameMutex);
+    sws_scale(
+            captureSwsContextCache,
+            frame->data,
+            frame->linesize,
+            0,
+            frame->height,
+            captureFrameCache->data,
+            captureFrameCache->linesize
+    );
+    captureFrameWidth = frame->width;
+    captureFrameHeight = frame->height;
+    captureFrameRgba = captureFrameBufferCache;
     return true;
 }
 
@@ -1288,6 +1380,11 @@ bool NativePlayer::ensureCaptureCache(
 
 /** 清理渲染相关缓存。 */
 void NativePlayer::clearRenderCache() {
+    {
+        std::lock_guard<std::mutex> glLock(glRendererMutex);
+        glVideoRenderer.release();
+    }
+
     if (swsContextCache != nullptr) {
         sws_freeContext(swsContextCache);
         swsContextCache = nullptr;
@@ -2059,6 +2156,11 @@ void NativePlayer::releaseFormatContext() {
 /** 释放 Surface 引用。 */
 void NativePlayer::releaseSurface() {
     std::lock_guard<std::mutex> lock(windowMutex);
+    {
+        std::lock_guard<std::mutex> glLock(glRendererMutex);
+        glVideoRenderer.release();
+        glRenderFailed = false;
+    }
 
     if (nativeWindow != nullptr) {
         ANativeWindow_release(nativeWindow);

@@ -1,6 +1,8 @@
 #include "GlVideoRenderer.h"
 
 #include <android/log.h>
+#include <algorithm>
+#include <cstring>
 #include <sstream>
 #include <vector>
 
@@ -20,8 +22,18 @@ static const char *VERTEX_SHADER_SOURCE =
 static const char *FRAGMENT_SHADER_SOURCE =
         "precision mediump float;\n"
         "varying vec2 vTexCoord;\n"
+        "uniform sampler2D yTexture;\n"
+        "uniform sampler2D uTexture;\n"
+        "uniform sampler2D vTexture;\n"
         "void main() {\n"
-        "    gl_FragColor = vec4(vTexCoord.x * 0.0, vTexCoord.y * 0.0, 0.0, 1.0);\n"
+        "    float y = texture2D(yTexture, vTexCoord).r;\n"
+        "    float u = texture2D(uTexture, vTexCoord).r - 0.5;\n"
+        "    float v = texture2D(vTexture, vTexCoord).r - 0.5;\n"
+        "    y = 1.1643 * (y - 0.0625);\n"
+        "    float r = y + 1.5958 * v;\n"
+        "    float g = y - 0.3917 * u - 0.8129 * v;\n"
+        "    float b = y + 2.0170 * u;\n"
+        "    gl_FragColor = vec4(r, g, b, 1.0);\n"
         "}\n";
 
 /** 创建 OpenGL ES 渲染器并初始化默认值。 */
@@ -31,6 +43,11 @@ GlVideoRenderer::GlVideoRenderer()
           eglContext(EGL_NO_CONTEXT),
           eglConfig(nullptr),
           programId(0),
+          positionLocation(-1),
+          texCoordLocation(-1),
+          yTextureLocation(-1),
+          uTextureLocation(-1),
+          vTextureLocation(-1),
           textureIds{0, 0, 0},
           surfaceWidth(0),
           surfaceHeight(0),
@@ -165,6 +182,125 @@ std::string GlVideoRenderer::renderBlackFrame() {
     return "OpenGL black frame rendered";
 }
 
+/** 上传并渲染一帧 YUV420P 视频帧。 */
+std::string GlVideoRenderer::renderYuv420PFrame(
+        const uint8_t *yData,
+        int yLineSize,
+        const uint8_t *uData,
+        int uLineSize,
+        const uint8_t *vData,
+        int vLineSize,
+        int frameWidth,
+        int frameHeight,
+        int scaleType) {
+
+    if (!initialized) {
+        lastError = "OpenGL YUV render skipped: renderer is not initialized";
+        return lastError;
+    }
+
+    if (yData == nullptr || uData == nullptr || vData == nullptr
+        || yLineSize <= 0 || uLineSize <= 0 || vLineSize <= 0
+        || frameWidth <= 0 || frameHeight <= 0) {
+        lastError = "OpenGL YUV render failed: invalid frame";
+        return lastError;
+    }
+
+    if ((frameWidth % 2) != 0 || (frameHeight % 2) != 0) {
+        lastError = "OpenGL YUV render failed: YUV420P size must be even";
+        return lastError;
+    }
+
+    if (!makeCurrent()) {
+        return lastError;
+    }
+
+    int chromaWidth = frameWidth / 2;
+    int chromaHeight = frameHeight / 2;
+
+    if (!uploadPlane(textureIds[0], yData, yLineSize, frameWidth, frameHeight)
+        || !uploadPlane(textureIds[1], uData, uLineSize, chromaWidth, chromaHeight)
+        || !uploadPlane(textureIds[2], vData, vLineSize, chromaWidth, chromaHeight)) {
+        return lastError;
+    }
+
+    int viewportWidth = surfaceWidth;
+    int viewportHeight = surfaceHeight;
+    int viewportX = 0;
+    int viewportY = 0;
+
+    if (scaleType != 1) {
+        float scaleX = static_cast<float>(surfaceWidth) / static_cast<float>(frameWidth);
+        float scaleY = static_cast<float>(surfaceHeight) / static_cast<float>(frameHeight);
+        float scale = std::min(scaleX, scaleY);
+
+        viewportWidth = std::max(1, static_cast<int>(frameWidth * scale));
+        viewportHeight = std::max(1, static_cast<int>(frameHeight * scale));
+        viewportX = (surfaceWidth - viewportWidth) / 2;
+        viewportY = (surfaceHeight - viewportHeight) / 2;
+    }
+
+    static const GLfloat vertices[] = {
+            -1.0f, -1.0f,
+            1.0f, -1.0f,
+            -1.0f, 1.0f,
+            1.0f, 1.0f
+    };
+    static const GLfloat texCoords[] = {
+            0.0f, 1.0f,
+            1.0f, 1.0f,
+            0.0f, 0.0f,
+            1.0f, 0.0f
+    };
+
+    glViewport(0, 0, surfaceWidth, surfaceHeight);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glViewport(viewportX, viewportY, viewportWidth, viewportHeight);
+
+    glUseProgram(programId);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, textureIds[0]);
+    glUniform1i(yTextureLocation, 0);
+
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, textureIds[1]);
+    glUniform1i(uTextureLocation, 1);
+
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, textureIds[2]);
+    glUniform1i(vTextureLocation, 2);
+
+    glVertexAttribPointer(positionLocation, 2, GL_FLOAT, GL_FALSE, 0, vertices);
+    glEnableVertexAttribArray(positionLocation);
+
+    glVertexAttribPointer(texCoordLocation, 2, GL_FLOAT, GL_FALSE, 0, texCoords);
+    glEnableVertexAttribArray(texCoordLocation);
+
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+    glDisableVertexAttribArray(positionLocation);
+    glDisableVertexAttribArray(texCoordLocation);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glUseProgram(0);
+
+    GLenum glError = glGetError();
+    if (glError != GL_NO_ERROR) {
+        std::ostringstream oss;
+        oss << "OpenGL YUV render failed, glError=0x" << std::hex << glError;
+        lastError = oss.str();
+        return lastError;
+    }
+
+    if (eglSwapBuffers(eglDisplay, eglSurface) != EGL_TRUE) {
+        lastError = makeEglError("eglSwapBuffers");
+        return lastError;
+    }
+
+    return "OpenGL YUV frame rendered";
+}
+
 /** 释放 EGL、shader、纹理和 Surface 相关资源。 */
 void GlVideoRenderer::release() {
     if (eglDisplay != EGL_NO_DISPLAY) {
@@ -198,6 +334,11 @@ void GlVideoRenderer::release() {
 /** 返回当前 OpenGL ES 渲染器是否已经初始化。 */
 bool GlVideoRenderer::isInitialized() const {
     return initialized;
+}
+
+/** 判断当前 EGL Surface 是否匹配指定 Surface 尺寸。 */
+bool GlVideoRenderer::matchesSurfaceSize(int width, int height) const {
+    return initialized && surfaceWidth == width && surfaceHeight == height;
 }
 
 /** 返回最近一次错误信息。 */
@@ -262,6 +403,23 @@ bool GlVideoRenderer::createProgram() {
         return false;
     }
 
+    positionLocation = glGetAttribLocation(programId, "aPosition");
+    texCoordLocation = glGetAttribLocation(programId, "aTexCoord");
+    yTextureLocation = glGetUniformLocation(programId, "yTexture");
+    uTextureLocation = glGetUniformLocation(programId, "uTexture");
+    vTextureLocation = glGetUniformLocation(programId, "vTexture");
+
+    if (positionLocation < 0
+        || texCoordLocation < 0
+        || yTextureLocation < 0
+        || uTextureLocation < 0
+        || vTextureLocation < 0) {
+        lastError = "OpenGL locate shader variable failed";
+        glDeleteProgram(programId);
+        programId = 0;
+        return false;
+    }
+
     return true;
 }
 
@@ -308,6 +466,57 @@ bool GlVideoRenderer::createTextures() {
     }
 
     glBindTexture(GL_TEXTURE_2D, 0);
+    return true;
+}
+
+/** 上传单个 YUV 平面到指定纹理。 */
+bool GlVideoRenderer::uploadPlane(
+        GLuint textureId,
+        const uint8_t *planeData,
+        int lineSize,
+        int width,
+        int height) {
+
+    if (textureId == 0 || planeData == nullptr || lineSize < width || width <= 0 || height <= 0) {
+        lastError = "OpenGL upload plane failed: invalid plane";
+        return false;
+    }
+
+    const uint8_t *uploadData = planeData;
+    std::vector<uint8_t> compactBuffer;
+    if (lineSize != width) {
+        compactBuffer.resize(static_cast<size_t>(width * height));
+        for (int y = 0; y < height; ++y) {
+            memcpy(
+                    compactBuffer.data() + static_cast<size_t>(y * width),
+                    planeData + static_cast<size_t>(y * lineSize),
+                    static_cast<size_t>(width)
+            );
+        }
+        uploadData = compactBuffer.data();
+    }
+
+    glBindTexture(GL_TEXTURE_2D, textureId);
+    glTexImage2D(
+            GL_TEXTURE_2D,
+            0,
+            GL_LUMINANCE,
+            width,
+            height,
+            0,
+            GL_LUMINANCE,
+            GL_UNSIGNED_BYTE,
+            uploadData
+    );
+
+    GLenum glError = glGetError();
+    if (glError != GL_NO_ERROR) {
+        std::ostringstream oss;
+        oss << "OpenGL upload plane failed, glError=0x" << std::hex << glError;
+        lastError = oss.str();
+        return false;
+    }
+
     return true;
 }
 
