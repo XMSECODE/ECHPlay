@@ -1,8 +1,8 @@
 # ECHPlay
 
-ECHPlay 是一个基于 FFmpeg 的 Android 软解播放器项目。v1.2 的重点是工程化：播放器能力已经从 Demo app 拆成独立 `echplayer` Android library module，业务项目可以通过 module 或 AAR 复用 `ECHPlayer` / `ECHPlayerView`。
+ECHPlay 是一个基于 FFmpeg 的 Android 软解播放器项目。v1.3 的重点是渲染链路升级：播放器能力已经从 Demo app 拆成独立 `echplayer` Android library module，并新增 OpenGL ES、YUV420P 三纹理、渲染模式切换、视频尺寸回调和 `ECHPlayerView` 画面比例控制。
 
-## v1.2 能力
+## v1.3 能力
 
 1. 独立播放器库：`android/echplayer` 使用 `com.android.library`，namespace 为 `com.echplay.player`。
 2. 纯 Demo app：`android/app` 只保留页面、布局、图标、测试资源和示例交互。
@@ -11,6 +11,12 @@ ECHPlay 是一个基于 FFmpeg 的 Android 软解播放器项目。v1.2 的重�
 5. AAR 输出：支持生成 `echplayer-debug.aar` 和 `echplayer-release.aar`。
 6. native so 自包含：Release AAR 内包含 `libechplayer.so` 和 FFmpeg so。
 7. ABI 策略：当前 arm64-v8a 可打包；armeabi-v7a 已预留目录，补齐 FFmpeg so 后自动启用。
+8. OpenGL ES 渲染：YUV420P 帧优先通过 Y、U、V 三纹理上传到 GPU 渲染。
+9. 兼容渲染：保留 NativeWindow + RGBA 软渲染路径，OpenGL 失败时可回退。
+10. 渲染模式：支持 `AUTO`、`OPENGL`、`NATIVE_WINDOW`。
+11. 画面比例：`ECHPlayerView` 支持 `fitCenter`、`centerCrop`、`fill`、`original`。
+12. 视频尺寸：Java 层支持视频宽高变化回调和宽高读取。
+13. 截图录制：截图仍保存当前解码帧 PNG，录制仍走 FFmpeg 封装输出，不依赖 Surface 截屏。
 
 ## 快速运行 Demo
 
@@ -81,6 +87,7 @@ dependencies {
 ```java
 ECHPlayer player = new ECHPlayer();
 player.setSurface(surface);
+player.setRenderMode(ECHPlayer.RENDER_MODE_AUTO);
 player.setDataSource("/sdcard/Movies/test.mp4");
 player.prepare();
 player.start();
@@ -91,6 +98,7 @@ RTSP 示例：
 ```java
 ECHPlayer player = new ECHPlayer();
 player.setSurface(surface);
+player.setRenderMode(ECHPlayer.RENDER_MODE_AUTO);
 player.setDataSource("rtsp://192.168.1.1:554/live");
 player.setRtspTransport(ECHPlayer.RTSP_TRANSPORT_TCP);
 player.setOption(ECHPlayer.OPTION_CATEGORY_FORMAT, ECHPlayer.OPTION_TIMEOUT, 5_000_000L);
@@ -113,6 +121,37 @@ player.setOnInfoListener((targetPlayer, infoCode, message) -> {
 });
 ```
 
+视频尺寸回调：
+
+```java
+player.setOnVideoSizeChangedListener((targetPlayer, width, height) -> {
+    // width 和 height 是当前视频帧尺寸，可用于布局和日志展示。
+});
+
+int videoWidth = player.getVideoWidth();
+int videoHeight = player.getVideoHeight();
+```
+
+渲染模式示例：
+
+```java
+// 默认推荐：优先 OpenGL，失败时回退 NativeWindow。
+player.setRenderMode(ECHPlayer.RENDER_MODE_AUTO);
+
+// 强制优先走 OpenGL YUV 三纹理路径。
+player.setRenderMode(ECHPlayer.RENDER_MODE_OPENGL);
+
+// 强制走兼容路径：NativeWindow + RGBA。
+player.setRenderMode(ECHPlayer.RENDER_MODE_NATIVE_WINDOW);
+
+// 也可以通过 option 设置。
+player.setOption(
+        ECHPlayer.OPTION_CATEGORY_PLAYER,
+        ECHPlayer.OPTION_RENDER_MODE,
+        ECHPlayer.OPTION_VALUE_RENDER_OPENGL
+);
+```
+
 截图示例：
 
 ```java
@@ -122,6 +161,8 @@ int width = result.width;
 int height = result.height;
 long timestampMs = result.timestampMs;
 ```
+
+截图说明：`captureCurrentFramePng(...)` 保存的是播放器缓存的当前解码帧 RGBA 数据，不是 `SurfaceView` 屏幕截图。因此在 OpenGL 和 NativeWindow 渲染模式下，截图行为保持一致。
 
 录制示例：
 
@@ -154,8 +195,26 @@ Java：
 ECHPlayerView playerView = findViewById(R.id.playerView);
 playerView.setVideoPath("rtsp://192.168.1.1:554/live");
 playerView.setRtspTransport(ECHPlayer.RTSP_TRANSPORT_TCP);
+playerView.setRenderMode(ECHPlayer.RENDER_MODE_AUTO);
+playerView.setScaleType(ECHPlayerView.SCALE_TYPE_FIT_CENTER);
 playerView.start();
 ```
+
+画面比例模式：
+
+```java
+playerView.setScaleType(ECHPlayerView.SCALE_TYPE_FIT_CENTER);
+playerView.setScaleType(ECHPlayerView.SCALE_TYPE_CENTER_CROP);
+playerView.setScaleType(ECHPlayerView.SCALE_TYPE_FILL);
+playerView.setScaleType(ECHPlayerView.SCALE_TYPE_ORIGINAL);
+```
+
+比例模式说明：
+
+1. `SCALE_TYPE_FIT_CENTER`：保持比例完整显示，默认模式。
+2. `SCALE_TYPE_CENTER_CROP`：保持比例填满容器，允许裁剪边缘。
+3. `SCALE_TYPE_FILL`：拉伸填满容器，允许变形。
+4. `SCALE_TYPE_ORIGINAL`：尽量按视频原始尺寸显示，超出容器时等比缩小。
 
 页面退出时：
 
@@ -170,8 +229,10 @@ playerView.release();
 1. RTSP 流：输入 `rtsp://...`，选择 `RTSP TCP` 或 `RTSP UDP`，点击“播放”。
 2. 本地文件：切到“本地文件”，输入路径或通过“选择文件”选择视频。
 3. PlayerView Demo：点击 `PlayerView` 按钮打开 `PlayerViewDemoActivity`。
+4. 渲染模式：主页面和 PlayerView Demo 均可切换 `AUTO`、`OpenGL`、`NativeWindow`。
+5. 画面比例：PlayerView Demo 可切换 `fit`、`crop`、`fill`、`original`。
 
-主页面会展示播放器状态、错误码、info 回调、缓冲事件、截图路径、录制状态和录制文件路径。
+主页面会展示播放器状态、错误码、info 回调、缓冲事件、视频尺寸、渲染模式、截图路径、录制状态和录制文件路径。
 
 ## ABI 状态
 
@@ -211,7 +272,7 @@ android/echplayer/src/main/cpp/ffmpeg/include
 android/echplayer/src/main/jniLibs/arm64-v8a
 ```
 
-## v1.2 验证清单
+## v1.3 验证清单
 
 构建验证：
 
@@ -229,21 +290,28 @@ android/echplayer/src/main/jniLibs/arm64-v8a
 
 功能回归：
 
-1. 本地 MP4 播放：选择本地视频，点击播放，确认画面和声音正常。
-2. 本地 MP4 控制：测试暂停、继续、停止、重新播放。
-3. seek：对本地 MP4 连续拖动，确认不死锁，seek 后音视频能恢复。
-4. RTSP TCP：输入 RTSP URL，选择 TCP，确认能播放或返回明确错误。
-5. RTSP UDP：输入同一 RTSP URL，选择 UDP，确认兼容性和错误提示。
-6. 直播流 seek：RTSP 直播流拖动时提示不支持 seek。
-7. 截图：播放中点击截图，确认保存的是当前解码帧 PNG。
-8. 录制：开始录制后停止录制，确认文件能正常生成。
-9. 录制中停止播放：开始录制后点停止或退出页面，确认录制能安全停止。
-10. PlayerView Demo：只通过组件按钮完成播放、暂停、停止、截图、录制。
+1. 本地 MP4 在 `AUTO` 模式播放，确认画面和声音正常。
+2. 本地 MP4 在 `OpenGL` 模式播放，确认 YUV420P 三纹理路径可显示或能明确回退。
+3. 本地 MP4 在 `NativeWindow` 模式播放，确认兼容路径正常。
+4. 本地 MP4 控制：测试暂停、继续、停止、重新播放。
+5. seek：对本地 MP4 连续拖动，确认不死锁，seek 后音视频能恢复。
+6. RTSP TCP：输入 RTSP URL，选择 TCP，确认能播放或返回明确错误。
+7. RTSP UDP：输入同一 RTSP URL，选择 UDP，确认兼容性和错误提示。
+8. 直播流 seek：RTSP 直播流拖动时提示不支持 seek。
+9. 视频尺寸：prepare 后 Demo 日志能显示视频宽高变化。
+10. PlayerView 比例：切换 `fit`、`crop`、`fill`、`original`，横屏和竖屏视频布局正常。
+11. 截图：OpenGL 模式播放中点击截图，确认保存的是当前解码帧 PNG。
+12. 截图：NativeWindow 模式播放中点击截图，确认保存的是当前解码帧 PNG。
+13. 录制：OpenGL 模式播放中开始录制后停止录制，确认文件能生成。
+14. 录制：NativeWindow 模式播放中开始录制后停止录制，确认文件能生成。
+15. 录制中停止播放：开始录制后点停止或退出页面，确认录制能安全停止。
+16. PlayerView Demo：只通过组件按钮完成播放、暂停、停止、截图、录制。
+17. 资源释放：连续进入和退出 PlayerView Demo，多次播放、停止、重新播放，不崩溃。
 
 ## 后续方向
 
-1. v1.3：OpenGL ES 渲染和 YUV 三纹理。
-2. v1.3：PlayerView 画面比例模式。
-3. v1.3：视频尺寸变化回调。
-4. 后续版本：MediaCodec 硬解。
-5. 后续版本：自动重连和更完整的网络流协议兼容。
+1. v1.4：MediaCodec H.264 / H.265 硬解。
+2. v1.4：软硬解切换和失败回退。
+3. v1.4：当前解码方式展示。
+4. 后续版本：自动重连和更完整的网络流协议兼容。
+5. 后续版本：字幕、多音轨和更多像素格式渲染兼容。
