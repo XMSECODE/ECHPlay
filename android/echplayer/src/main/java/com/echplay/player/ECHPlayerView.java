@@ -270,6 +270,8 @@ public class ECHPlayerView extends LinearLayout {
             emitEvent("PlayerView error " + errorCode + "\n" + message);
             return true;
         });
+        player.setOnVideoSizeChangedListener((targetPlayer, width, height) ->
+                emitEvent("PlayerView video size: " + width + "x" + height));
         if (surfaceReady && currentSurface != null && currentSurface.isValid()) {
             player.setSurface(currentSurface);
         }

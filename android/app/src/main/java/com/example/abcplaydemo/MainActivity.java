@@ -415,6 +415,13 @@ public class MainActivity extends AppCompatActivity {
 
         targetPlayer.setOnBufferingUpdateListener((callbackPlayer, percent) ->
                 postToUi(() -> appendLog("缓冲进度: " + percent + "%")));
+
+        targetPlayer.setOnVideoSizeChangedListener((callbackPlayer, width, height) ->
+                postToUi(() -> appendLog(
+                        "视频尺寸变化"
+                                + "\nwidth: " + width
+                                + "\nheight: " + height
+                )));
     }
 
     /** 应用 RTSP 网络播放参数。 */

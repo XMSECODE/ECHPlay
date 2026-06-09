@@ -158,6 +158,12 @@ public class ECHPlayer implements AutoCloseable {
         void onBufferingUpdate(ECHPlayer player, int percent);
     }
 
+    /** 视频尺寸变化监听器。 */
+    public interface OnVideoSizeChangedListener {
+        /** 视频宽高首次可用或发生变化时回调。 */
+        void onVideoSizeChanged(ECHPlayer player, int width, int height);
+    }
+
     /** RTSP 走 TCP 传输。 */
     public static final int RTSP_TRANSPORT_TCP = 0;
     /** RTSP 走 UDP 传输。 */
@@ -213,6 +219,12 @@ public class ECHPlayer implements AutoCloseable {
     private OnInfoListener onInfoListener;
     /** 缓冲进度监听器。 */
     private OnBufferingUpdateListener onBufferingUpdateListener;
+    /** 视频尺寸变化监听器。 */
+    private OnVideoSizeChangedListener onVideoSizeChangedListener;
+    /** 当前视频宽度。 */
+    private int videoWidth = 0;
+    /** 当前视频高度。 */
+    private int videoHeight = 0;
     /** 首帧视频渲染事件是否已经发出。 */
     private boolean videoRenderingStarted = false;
     /** 音频输出事件是否已经发出。 */
@@ -259,6 +271,11 @@ public class ECHPlayer implements AutoCloseable {
         onBufferingUpdateListener = listener;
     }
 
+    /** 设置视频尺寸变化监听器。 */
+    public synchronized void setOnVideoSizeChangedListener(OnVideoSizeChangedListener listener) {
+        onVideoSizeChangedListener = listener;
+    }
+
     /** 设置播放数据源。 */
     public synchronized void setDataSource(String dataSource) {
         checkReleased();
@@ -273,6 +290,7 @@ public class ECHPlayer implements AutoCloseable {
         prepared = false;
         playing = false;
         paused = false;
+        resetVideoSize();
         resetPlaybackEventFlags();
     }
 
@@ -337,6 +355,7 @@ public class ECHPlayer implements AutoCloseable {
         paused = false;
         state = prepared ? State.PREPARED : State.ERROR;
         if (prepared) {
+            updateVideoSizeFromNative();
             dispatchInfo(INFO_PREPARED, lastPrepareResult);
             dispatchBufferingUpdate(100);
             if (onPreparedListener != null) {
@@ -365,6 +384,7 @@ public class ECHPlayer implements AutoCloseable {
                     paused = false;
                     state = prepared ? State.PREPARED : State.ERROR;
                     if (prepared) {
+                        updateVideoSizeFromNative();
                         dispatchInfo(INFO_PREPARED, lastPrepareResult);
                         dispatchBufferingUpdate(100);
                         if (onPreparedListener != null) {
@@ -479,6 +499,7 @@ public class ECHPlayer implements AutoCloseable {
         rtspTransport = RTSP_TRANSPORT_TCP;
         recordingState = RecordingState.IDLE;
         lastRecordingPath = "";
+        resetVideoSize();
         resetPlaybackEventFlags();
         state = State.IDLE;
     }
@@ -568,6 +589,20 @@ public class ECHPlayer implements AutoCloseable {
     /** 返回当前媒体是否支持 seek。 */
     public synchronized boolean isSeekable() {
         return !released && nativeIsSeekable(nativeHandle);
+    }
+
+    /** 获取当前视频宽度。 */
+    public synchronized int getVideoWidth() {
+        checkReleased();
+        updateVideoSizeFromNative();
+        return videoWidth;
+    }
+
+    /** 获取当前视频高度。 */
+    public synchronized int getVideoHeight() {
+        checkReleased();
+        updateVideoSizeFromNative();
+        return videoHeight;
     }
 
     /** 返回当前播放器是否已经释放。 */
@@ -724,6 +759,7 @@ public class ECHPlayer implements AutoCloseable {
             playing = false;
             paused = false;
             recordingState = RecordingState.IDLE;
+            resetVideoSize();
             state = State.RELEASED;
 
             releaseAudioTrack();
@@ -798,6 +834,11 @@ public class ECHPlayer implements AutoCloseable {
             paused = false;
         }
         dispatchError(errorCode, message);
+    }
+
+    /** Native 回调：视频尺寸发生变化。 */
+    private synchronized void onNativeVideoSizeChanged(int width, int height) {
+        updateVideoSize(width, height);
     }
 
     /** 释放当前 AudioTrack。 */
@@ -877,6 +918,45 @@ public class ECHPlayer implements AutoCloseable {
         if (onBufferingUpdateListener != null) {
             onBufferingUpdateListener.onBufferingUpdate(this, percent);
         }
+    }
+
+    /** 分发视频尺寸变化回调。 */
+    private void dispatchVideoSizeChanged(int width, int height) {
+        if (onVideoSizeChangedListener != null) {
+            onVideoSizeChangedListener.onVideoSizeChanged(this, width, height);
+        }
+    }
+
+    /** 从 NativePlayer 刷新当前视频尺寸。 */
+    private void updateVideoSizeFromNative() {
+        if (nativeHandle == 0) {
+            return;
+        }
+
+        int width = nativeGetVideoWidth(nativeHandle);
+        int height = nativeGetVideoHeight(nativeHandle);
+        updateVideoSize(width, height);
+    }
+
+    /** 更新当前视频尺寸并在变化时通知外部。 */
+    private void updateVideoSize(int width, int height) {
+        if (width <= 0 || height <= 0) {
+            return;
+        }
+
+        if (videoWidth == width && videoHeight == height) {
+            return;
+        }
+
+        videoWidth = width;
+        videoHeight = height;
+        dispatchVideoSizeChanged(width, height);
+    }
+
+    /** 重置当前视频尺寸。 */
+    private void resetVideoSize() {
+        videoWidth = 0;
+        videoHeight = 0;
     }
 
     /** 在首帧解码后分发视频渲染开始事件。 */
@@ -985,6 +1065,12 @@ public class ECHPlayer implements AutoCloseable {
 
     /** 调用 NativePlayer.isSeekable。 */
     private native boolean nativeIsSeekable(long nativeHandle);
+
+    /** 调用 NativePlayer.getVideoWidth。 */
+    private native int nativeGetVideoWidth(long nativeHandle);
+
+    /** 调用 NativePlayer.getVideoHeight。 */
+    private native int nativeGetVideoHeight(long nativeHandle);
 
     /** 调用 NativePlayer.copyCurrentFrameRgba。 */
     private native byte[] nativeGetCurrentFrameRgba(long nativeHandle);

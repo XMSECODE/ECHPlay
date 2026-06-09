@@ -71,6 +71,8 @@ NativePlayer::NativePlayer(JavaVM *vm, JNIEnv *env, jobject javaPlayer)
           inputBufferSize(1024000),
           maxDelayUs(500000),
           seekable(false),
+          videoWidth(0),
+          videoHeight(0),
           buffering(false),
           javaVm(vm),
           javaPlayerObject(nullptr),
@@ -78,6 +80,7 @@ NativePlayer::NativePlayer(JavaVM *vm, JNIEnv *env, jobject javaPlayer)
           onNativeAudioDataMethod(nullptr),
           onNativeInfoMethod(nullptr),
           onNativeErrorMethod(nullptr),
+          onNativeVideoSizeChangedMethod(nullptr),
           recordFormatContext(nullptr),
           recording(false),
           recordingOutputPath(),
@@ -112,6 +115,12 @@ NativePlayer::NativePlayer(JavaVM *vm, JNIEnv *env, jobject javaPlayer)
                     "(ILjava/lang/String;)V"
             );
 
+            onNativeVideoSizeChangedMethod = env->GetMethodID(
+                    clazz,
+                    "onNativeVideoSizeChanged",
+                    "(II)V"
+            );
+
             env->DeleteLocalRef(clazz);
         }
     }
@@ -136,6 +145,7 @@ NativePlayer::~NativePlayer() {
 void NativePlayer::setDataSource(const std::string &source) {
     dataSource = source;
     seekable = false;
+    clearVideoSize();
     ECH_LOGI("setDataSource: %s", dataSource.c_str());
 }
 
@@ -299,6 +309,7 @@ std::string NativePlayer::prepare() {
 
     AVStream *videoStream = formatContext->streams[videoStreamIndex];
     AVCodecParameters *videoCodecPar = videoStream->codecpar;
+    updateVideoSize(videoCodecPar->width, videoCodecPar->height);
 
     oss << "\n";
     oss << "video stream index: " << videoStreamIndex << "\n";
@@ -687,6 +698,18 @@ bool NativePlayer::isSeekable() {
     return prepared && formatContext != nullptr && seekable;
 }
 
+/** 返回当前视频宽度。 */
+int NativePlayer::getVideoWidth() {
+    std::lock_guard<std::mutex> lock(videoSizeMutex);
+    return videoWidth;
+}
+
+/** 返回当前视频高度。 */
+int NativePlayer::getVideoHeight() {
+    std::lock_guard<std::mutex> lock(videoSizeMutex);
+    return videoHeight;
+}
+
 /** 解封装线程，负责读取原始包并分发给解码与录制。 */
 void NativePlayer::demuxLoop() {
     ECH_LOGI("demuxLoop start");
@@ -970,6 +993,7 @@ bool NativePlayer::renderFrameToSurface(AVFrame *frame) {
         ANativeWindow_release(window);
         return false;
     }
+    updateVideoSize(videoWidth, videoHeight);
 
     float scaleX = static_cast<float>(surfaceWidth) / static_cast<float>(videoWidth);
     float scaleY = static_cast<float>(surfaceHeight) / static_cast<float>(videoHeight);
@@ -1916,6 +1940,53 @@ void NativePlayer::notifyError(int errorCode, const std::string &message) {
     releaseJNIEnv(needDetach);
 }
 
+/** 回调 Java 视频尺寸变化事件。 */
+void NativePlayer::notifyVideoSizeChanged(int width, int height) {
+    bool needDetach = false;
+    JNIEnv *env = getJNIEnv(&needDetach);
+
+    if (env != nullptr
+        && javaPlayerObject != nullptr
+        && onNativeVideoSizeChangedMethod != nullptr) {
+        env->CallVoidMethod(
+                javaPlayerObject,
+                onNativeVideoSizeChangedMethod,
+                width,
+                height
+        );
+    }
+
+    releaseJNIEnv(needDetach);
+}
+
+/** 更新视频尺寸并在变化时通知 Java。 */
+void NativePlayer::updateVideoSize(int width, int height) {
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    bool changed = false;
+    {
+        std::lock_guard<std::mutex> lock(videoSizeMutex);
+        if (videoWidth != width || videoHeight != height) {
+            videoWidth = width;
+            videoHeight = height;
+            changed = true;
+        }
+    }
+
+    if (changed) {
+        notifyVideoSizeChanged(width, height);
+    }
+}
+
+/** 清空已记录的视频尺寸。 */
+void NativePlayer::clearVideoSize() {
+    std::lock_guard<std::mutex> lock(videoSizeMutex);
+    videoWidth = 0;
+    videoHeight = 0;
+}
+
 /** 更新缓冲状态并按需通知 Java。 */
 void NativePlayer::updateBufferingState(bool isBuffering, const std::string &message) {
     bool expected = !isBuffering;
@@ -1945,6 +2016,7 @@ void NativePlayer::releaseJavaCallback() {
     onNativeAudioDataMethod = nullptr;
     onNativeInfoMethod = nullptr;
     onNativeErrorMethod = nullptr;
+    onNativeVideoSizeChangedMethod = nullptr;
 
     releaseJNIEnv(needDetach);
 }
@@ -1967,6 +2039,7 @@ void NativePlayer::releaseFormatContext() {
     audioStreamIndex = -1;
     prepared = false;
     seekable = false;
+    clearVideoSize();
     buffering = false;
 }
 

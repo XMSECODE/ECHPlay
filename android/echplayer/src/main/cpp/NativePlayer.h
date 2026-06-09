@@ -82,6 +82,12 @@ public:
     /** 返回当前媒体是否支持 seek。 */
     bool isSeekable();
 
+    /** 获取当前视频宽度。 */
+    int getVideoWidth();
+
+    /** 获取当前视频高度。 */
+    int getVideoHeight();
+
     /** 获取 FFmpeg 版本字符串。 */
     std::string getFFmpegVersion();
 
@@ -185,6 +191,12 @@ private:
     int64_t maxDelayUs;
     /** 当前媒体是否支持 seek。 */
     bool seekable;
+    /** 视频尺寸互斥锁。 */
+    std::mutex videoSizeMutex;
+    /** 当前视频宽度。 */
+    int videoWidth;
+    /** 当前视频高度。 */
+    int videoHeight;
     /** 当前是否处于缓冲状态。 */
     std::atomic<bool> buffering;
 
@@ -200,6 +212,8 @@ private:
     jmethodID onNativeInfoMethod;
     /** Native 错误事件回调方法。 */
     jmethodID onNativeErrorMethod;
+    /** Native 视频尺寸变化回调方法。 */
+    jmethodID onNativeVideoSizeChangedMethod;
 
     /** 录制输出上下文。 */
     AVFormatContext *recordFormatContext;
@@ -297,6 +311,15 @@ private:
 
     /** 回调 Java 播放器错误事件。 */
     void notifyError(int errorCode, const std::string &message);
+
+    /** 回调 Java 视频尺寸变化事件。 */
+    void notifyVideoSizeChanged(int width, int height);
+
+    /** 更新视频尺寸并在变化时回调 Java。 */
+    void updateVideoSize(int width, int height);
+
+    /** 清空已记录的视频尺寸。 */
+    void clearVideoSize();
 
     /** 更新缓冲状态并按需发出事件。 */
     void updateBufferingState(bool isBuffering, const std::string &message);

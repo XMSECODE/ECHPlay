@@ -268,6 +268,36 @@ Java_com_echplay_player_ECHPlayer_nativeIsSeekable(
 }
 
 extern "C"
+JNIEXPORT jint JNICALL
+Java_com_echplay_player_ECHPlayer_nativeGetVideoWidth(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return 0;
+    }
+
+    return static_cast<jint>(player->getVideoWidth());
+}
+
+extern "C"
+JNIEXPORT jint JNICALL
+Java_com_echplay_player_ECHPlayer_nativeGetVideoHeight(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return 0;
+    }
+
+    return static_cast<jint>(player->getVideoHeight());
+}
+
+extern "C"
 JNIEXPORT jbyteArray JNICALL
 Java_com_echplay_player_ECHPlayer_nativeGetCurrentFrameRgba(
         JNIEnv *env,
