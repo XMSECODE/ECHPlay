@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.22.1)
 
-project("abcplaydemo")
+project("echplayer")
 
 add_library(
-        abcplaydemo
+        echplayer
         SHARED
         native-lib.cpp
         NativePlayer.cpp
@@ -33,7 +33,7 @@ find_library(log-lib log)
 find_library(android-lib android)
 
 target_link_libraries(
-        abcplaydemo
+        echplayer
 
         avcodec
         avformat

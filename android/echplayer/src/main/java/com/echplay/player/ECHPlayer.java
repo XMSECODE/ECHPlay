@@ -182,7 +182,7 @@ public class ECHPlayer implements AutoCloseable {
     public static final String OPTION_MAX_DELAY = "max_delay";
 
     static {
-        System.loadLibrary("abcplaydemo");
+        System.loadLibrary("echplayer");
     }
 
     /** NativePlayer 指针句柄。 */

@@ -12,7 +12,7 @@ static NativePlayer *getPlayer(jlong nativeHandle) {
 
 extern "C"
 JNIEXPORT jlong JNICALL
-Java_com_example_abcplaydemo_player_ECHPlayer_nativeInit(
+Java_com_echplay_player_ECHPlayer_nativeInit(
         JNIEnv *env,
         jobject thiz) {
 
@@ -25,7 +25,7 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativeInit(
 
 extern "C"
 JNIEXPORT void JNICALL
-Java_com_example_abcplaydemo_player_ECHPlayer_nativeRelease(
+Java_com_echplay_player_ECHPlayer_nativeRelease(
         JNIEnv *env,
         jobject thiz,
         jlong nativeHandle) {
@@ -38,7 +38,7 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativeRelease(
 
 extern "C"
 JNIEXPORT void JNICALL
-Java_com_example_abcplaydemo_player_ECHPlayer_nativeSetDataSource(
+Java_com_echplay_player_ECHPlayer_nativeSetDataSource(
         JNIEnv *env,
         jobject thiz,
         jlong nativeHandle,
@@ -66,7 +66,7 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativeSetDataSource(
 
 extern "C"
 JNIEXPORT void JNICALL
-Java_com_example_abcplaydemo_player_ECHPlayer_nativeSetSurface(
+Java_com_echplay_player_ECHPlayer_nativeSetSurface(
         JNIEnv *env,
         jobject thiz,
         jlong nativeHandle,
@@ -92,7 +92,7 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativeSetSurface(
 
 extern "C"
 JNIEXPORT void JNICALL
-Java_com_example_abcplaydemo_player_ECHPlayer_nativeSetRtspTransport(
+Java_com_echplay_player_ECHPlayer_nativeSetRtspTransport(
         JNIEnv *env,
         jobject thiz,
         jlong nativeHandle,
@@ -106,7 +106,7 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativeSetRtspTransport(
 
 extern "C"
 JNIEXPORT jboolean JNICALL
-Java_com_example_abcplaydemo_player_ECHPlayer_nativeSetLongOption(
+Java_com_echplay_player_ECHPlayer_nativeSetLongOption(
         JNIEnv *env,
         jobject thiz,
         jlong nativeHandle,
@@ -136,7 +136,7 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativeSetLongOption(
 
 extern "C"
 JNIEXPORT jstring JNICALL
-Java_com_example_abcplaydemo_player_ECHPlayer_nativePrepare(
+Java_com_echplay_player_ECHPlayer_nativePrepare(
         JNIEnv *env,
         jobject thiz,
         jlong nativeHandle) {
@@ -152,7 +152,7 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativePrepare(
 
 extern "C"
 JNIEXPORT jstring JNICALL
-Java_com_example_abcplaydemo_player_ECHPlayer_nativePlay(
+Java_com_echplay_player_ECHPlayer_nativePlay(
         JNIEnv *env,
         jobject thiz,
         jlong nativeHandle) {
@@ -168,7 +168,7 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativePlay(
 
 extern "C"
 JNIEXPORT void JNICALL
-Java_com_example_abcplaydemo_player_ECHPlayer_nativePause(
+Java_com_echplay_player_ECHPlayer_nativePause(
         JNIEnv *env,
         jobject thiz,
         jlong nativeHandle) {
@@ -181,7 +181,7 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativePause(
 
 extern "C"
 JNIEXPORT void JNICALL
-Java_com_example_abcplaydemo_player_ECHPlayer_nativeResume(
+Java_com_echplay_player_ECHPlayer_nativeResume(
         JNIEnv *env,
         jobject thiz,
         jlong nativeHandle) {
@@ -194,7 +194,7 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativeResume(
 
 extern "C"
 JNIEXPORT void JNICALL
-Java_com_example_abcplaydemo_player_ECHPlayer_nativeStop(
+Java_com_echplay_player_ECHPlayer_nativeStop(
         JNIEnv *env,
         jobject thiz,
         jlong nativeHandle) {
@@ -207,7 +207,7 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativeStop(
 
 extern "C"
 JNIEXPORT jstring JNICALL
-Java_com_example_abcplaydemo_player_ECHPlayer_nativeSeekToMs(
+Java_com_echplay_player_ECHPlayer_nativeSeekToMs(
         JNIEnv *env,
         jobject thiz,
         jlong nativeHandle,
@@ -224,7 +224,7 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativeSeekToMs(
 
 extern "C"
 JNIEXPORT jlong JNICALL
-Java_com_example_abcplaydemo_player_ECHPlayer_nativeGetDurationMs(
+Java_com_echplay_player_ECHPlayer_nativeGetDurationMs(
         JNIEnv *env,
         jobject thiz,
         jlong nativeHandle) {
@@ -239,7 +239,7 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativeGetDurationMs(
 
 extern "C"
 JNIEXPORT jlong JNICALL
-Java_com_example_abcplaydemo_player_ECHPlayer_nativeGetCurrentPositionMs(
+Java_com_echplay_player_ECHPlayer_nativeGetCurrentPositionMs(
         JNIEnv *env,
         jobject thiz,
         jlong nativeHandle) {
@@ -254,7 +254,7 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativeGetCurrentPositionMs(
 
 extern "C"
 JNIEXPORT jboolean JNICALL
-Java_com_example_abcplaydemo_player_ECHPlayer_nativeIsSeekable(
+Java_com_echplay_player_ECHPlayer_nativeIsSeekable(
         JNIEnv *env,
         jobject thiz,
         jlong nativeHandle) {
@@ -269,7 +269,7 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativeIsSeekable(
 
 extern "C"
 JNIEXPORT jbyteArray JNICALL
-Java_com_example_abcplaydemo_player_ECHPlayer_nativeGetCurrentFrameRgba(
+Java_com_echplay_player_ECHPlayer_nativeGetCurrentFrameRgba(
         JNIEnv *env,
         jobject thiz,
         jlong nativeHandle) {
@@ -302,7 +302,7 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativeGetCurrentFrameRgba(
 
 extern "C"
 JNIEXPORT jintArray JNICALL
-Java_com_example_abcplaydemo_player_ECHPlayer_nativeGetCurrentFrameSize(
+Java_com_echplay_player_ECHPlayer_nativeGetCurrentFrameSize(
         JNIEnv *env,
         jobject thiz,
         jlong nativeHandle) {
@@ -334,7 +334,7 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativeGetCurrentFrameSize(
 
 extern "C"
 JNIEXPORT jstring JNICALL
-Java_com_example_abcplaydemo_player_ECHPlayer_nativeStartRecording(
+Java_com_echplay_player_ECHPlayer_nativeStartRecording(
         JNIEnv *env,
         jobject thiz,
         jlong nativeHandle,
@@ -361,7 +361,7 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativeStartRecording(
 
 extern "C"
 JNIEXPORT jstring JNICALL
-Java_com_example_abcplaydemo_player_ECHPlayer_nativeStopRecording(
+Java_com_echplay_player_ECHPlayer_nativeStopRecording(
         JNIEnv *env,
         jobject thiz,
         jlong nativeHandle) {
@@ -377,7 +377,7 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativeStopRecording(
 
 extern "C"
 JNIEXPORT jboolean JNICALL
-Java_com_example_abcplaydemo_player_ECHPlayer_nativeIsRecording(
+Java_com_echplay_player_ECHPlayer_nativeIsRecording(
         JNIEnv *env,
         jobject thiz,
         jlong nativeHandle) {
@@ -392,7 +392,7 @@ Java_com_example_abcplaydemo_player_ECHPlayer_nativeIsRecording(
 
 extern "C"
 JNIEXPORT jstring JNICALL
-Java_com_example_abcplaydemo_player_ECHPlayer_nativeGetFFmpegVersion(
+Java_com_echplay_player_ECHPlayer_nativeGetFFmpegVersion(
         JNIEnv *env,
         jobject thiz,
         jlong nativeHandle) {
