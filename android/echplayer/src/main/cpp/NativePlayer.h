@@ -266,10 +266,10 @@ private:
     std::mutex recordMutex;
     /** 输入流到录制输出流的索引映射。 */
     std::vector<int> recordStreamMapping;
-    /** 每个流录制起始 PTS，用于把录制时间归零。 */
-    std::vector<int64_t> recordStartPts;
     /** 每个流录制起始 DTS，用于把录制时间归零。 */
     std::vector<int64_t> recordStartDts;
+    /** 每个输入流是否已经允许写入录制文件。 */
+    std::vector<bool> recordStreamReady;
     /** 当前录制文件路径。 */
     std::string recordingOutputPath;
     /** 当前录制输出是否已成功写入文件头。 */

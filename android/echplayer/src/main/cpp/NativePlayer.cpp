@@ -672,8 +672,8 @@ std::string NativePlayer::startRecording(const std::string &outputPath) {
     }
 
     std::vector<int> streamMapping(formatContext->nb_streams, -1);
-    std::vector<int64_t> startPts(formatContext->nb_streams, AV_NOPTS_VALUE);
     std::vector<int64_t> startDts(formatContext->nb_streams, AV_NOPTS_VALUE);
+    std::vector<bool> streamReady(formatContext->nb_streams, false);
 
     for (unsigned int inputIndex = 0; inputIndex < formatContext->nb_streams; ++inputIndex) {
         AVStream *inputStream = formatContext->streams[inputIndex];
@@ -722,8 +722,8 @@ std::string NativePlayer::startRecording(const std::string &outputPath) {
 
     recordFormatContext = outputContext;
     recordStreamMapping = std::move(streamMapping);
-    recordStartPts = std::move(startPts);
     recordStartDts = std::move(startDts);
+    recordStreamReady = std::move(streamReady);
     recordingOutputPath = outputPath;
     recordHeaderWritten = true;
     recording = true;
@@ -2120,6 +2120,15 @@ void NativePlayer::writeRecordingPacket(AVPacket *packet) {
         return;
     }
 
+    bool isVideoPacket = inputStream->codecpar != nullptr
+                         && inputStream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO;
+    if (!recordStreamReady[packet->stream_index]) {
+        if (isVideoPacket && !(packet->flags & AV_PKT_FLAG_KEY)) {
+            return;
+        }
+        recordStreamReady[packet->stream_index] = true;
+    }
+
     AVPacket outputPacket = {0};
     if (av_packet_ref(&outputPacket, packet) < 0) {
         return;
@@ -2127,32 +2136,35 @@ void NativePlayer::writeRecordingPacket(AVPacket *packet) {
 
     outputPacket.stream_index = outputStreamIndex;
 
-    if (outputPacket.pts != AV_NOPTS_VALUE) {
-        if (recordStartPts[packet->stream_index] == AV_NOPTS_VALUE) {
-            recordStartPts[packet->stream_index] = outputPacket.pts;
+    if (recordStartDts[packet->stream_index] == AV_NOPTS_VALUE) {
+        if (outputPacket.dts != AV_NOPTS_VALUE) {
+            recordStartDts[packet->stream_index] = outputPacket.dts;
+        } else if (outputPacket.pts != AV_NOPTS_VALUE) {
+            recordStartDts[packet->stream_index] = outputPacket.pts;
+        } else {
+            recordStartDts[packet->stream_index] = 0;
         }
-        outputPacket.pts -= recordStartPts[packet->stream_index];
+    }
+
+    int64_t startTimestamp = recordStartDts[packet->stream_index];
+    if (outputPacket.pts != AV_NOPTS_VALUE) {
+        outputPacket.pts -= startTimestamp;
         if (outputPacket.pts < 0) {
             outputPacket.pts = 0;
         }
     }
 
     if (outputPacket.dts != AV_NOPTS_VALUE) {
-        if (recordStartDts[packet->stream_index] == AV_NOPTS_VALUE) {
-            recordStartDts[packet->stream_index] = outputPacket.dts;
-        }
         outputPacket.dts -= recordStartDts[packet->stream_index];
         if (outputPacket.dts < 0) {
             outputPacket.dts = 0;
         }
     }
 
-    if (outputPacket.duration > 0) {
-        outputPacket.duration = av_rescale_q(
-                outputPacket.duration,
-                inputStream->time_base,
-                outputStream->time_base
-        );
+    if (outputPacket.pts != AV_NOPTS_VALUE
+        && outputPacket.dts != AV_NOPTS_VALUE
+        && outputPacket.dts > outputPacket.pts) {
+        outputPacket.dts = outputPacket.pts;
     }
 
     outputPacket.pos = -1;
@@ -2171,8 +2183,8 @@ void NativePlayer::writeRecordingPacket(AVPacket *packet) {
 void NativePlayer::stopRecordingLocked() {
     if (!recording && recordFormatContext == nullptr) {
         recordStreamMapping.clear();
-        recordStartPts.clear();
         recordStartDts.clear();
+        recordStreamReady.clear();
         recordingOutputPath.clear();
         recordHeaderWritten = false;
         return;
@@ -2192,8 +2204,8 @@ void NativePlayer::stopRecordingLocked() {
     }
 
     recordStreamMapping.clear();
-    recordStartPts.clear();
     recordStartDts.clear();
+    recordStreamReady.clear();
     recordingOutputPath.clear();
     recordHeaderWritten = false;
     recording = false;

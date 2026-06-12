@@ -407,6 +407,12 @@ public class MainActivity extends AppCompatActivity {
             String prepareInfo = player.prepare();
             appendLog(prepareInfo);
             updateDecodeStatusUi();
+            if (player.getState() != ECHPlayer.State.PREPARED) {
+                appendLog("play aborted: prepare failed\nstate: " + player.getState());
+                updateRecordButtonState();
+                return;
+            }
+
             durationMs = Math.max(0, player.getDuration());
             durationTimeText.setText(formatTime(durationMs));
             updateSeekableUi();
