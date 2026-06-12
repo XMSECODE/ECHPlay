@@ -24,6 +24,8 @@ public class PlayerViewDemoActivity extends AppCompatActivity {
     private RadioGroup transportGroup;
     /** 渲染模式组选框。 */
     private RadioGroup renderModeGroup;
+    /** 解码模式组选框。 */
+    private RadioGroup decodeModeGroup;
     /** 画面比例模式组选框。 */
     private RadioGroup scaleTypeGroup;
     /** 日志文本。 */
@@ -38,6 +40,7 @@ public class PlayerViewDemoActivity extends AppCompatActivity {
         urlInput = findViewById(R.id.playerViewUrlInput);
         transportGroup = findViewById(R.id.playerViewTransportGroup);
         renderModeGroup = findViewById(R.id.playerViewRenderModeGroup);
+        decodeModeGroup = findViewById(R.id.playerViewDecodeModeGroup);
         scaleTypeGroup = findViewById(R.id.playerViewScaleGroup);
         logText = findViewById(R.id.playerViewLogText);
         Button setPathButton = findViewById(R.id.playerViewSetPathButton);
@@ -46,9 +49,11 @@ public class PlayerViewDemoActivity extends AppCompatActivity {
         setPathButton.setOnClickListener(view -> applyPlayerViewSource());
         transportGroup.setOnCheckedChangeListener((group, checkedId) -> applyRtspTransport());
         renderModeGroup.setOnCheckedChangeListener((group, checkedId) -> applyRenderMode());
+        decodeModeGroup.setOnCheckedChangeListener((group, checkedId) -> applyDecodeMode());
         scaleTypeGroup.setOnCheckedChangeListener((group, checkedId) -> applyScaleType());
 
         applyRenderMode();
+        applyDecodeMode();
         applyScaleType();
         applyPlayerViewSource();
     }
@@ -85,6 +90,24 @@ public class PlayerViewDemoActivity extends AppCompatActivity {
 
         playerView.setRenderMode(renderMode);
         appendLog("renderMode: " + renderModeText);
+    }
+
+    /** 应用当前解码模式。 */
+    private void applyDecodeMode() {
+        int checkedId = decodeModeGroup.getCheckedRadioButtonId();
+        int decodeMode = ECHPlayer.DECODE_MODE_AUTO;
+        String decodeModeText = "AUTO";
+
+        if (checkedId == R.id.playerViewDecodeSoftwareButton) {
+            decodeMode = ECHPlayer.DECODE_MODE_SOFTWARE;
+            decodeModeText = "software";
+        } else if (checkedId == R.id.playerViewDecodeMediaCodecButton) {
+            decodeMode = ECHPlayer.DECODE_MODE_MEDIACODEC;
+            decodeModeText = "mediacodec";
+        }
+
+        playerView.setDecodeMode(decodeMode);
+        appendLog("decodeMode: " + decodeModeText);
     }
 
     /** 应用当前画面比例模式。 */

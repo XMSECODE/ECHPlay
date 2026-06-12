@@ -120,6 +120,20 @@ Java_com_echplay_player_ECHPlayer_nativeSetRenderMode(
 
 extern "C"
 JNIEXPORT void JNICALL
+Java_com_echplay_player_ECHPlayer_nativeSetDecodeMode(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle,
+        jint decodeMode) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player != nullptr) {
+        player->setDecodeMode(static_cast<int>(decodeMode));
+    }
+}
+
+extern "C"
+JNIEXPORT void JNICALL
 Java_com_echplay_player_ECHPlayer_nativeSetRtspTransport(
         JNIEnv *env,
         jobject thiz,
@@ -446,6 +460,54 @@ Java_com_echplay_player_ECHPlayer_nativeIsRecording(
     }
 
     return player->isRecording() ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_com_echplay_player_ECHPlayer_nativeGetCurrentDecodeType(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return env->NewStringUTF("software");
+    }
+
+    std::string decodeType = player->getCurrentDecodeType();
+    return env->NewStringUTF(decodeType.c_str());
+}
+
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_com_echplay_player_ECHPlayer_nativeGetCurrentDecoderName(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return env->NewStringUTF("ffmpeg");
+    }
+
+    std::string decoderName = player->getCurrentDecoderName();
+    return env->NewStringUTF(decoderName.c_str());
+}
+
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_com_echplay_player_ECHPlayer_nativeGetLastDecodeFallbackReason(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return env->NewStringUTF("");
+    }
+
+    std::string fallbackReason = player->getLastDecodeFallbackReason();
+    return env->NewStringUTF(fallbackReason.c_str());
 }
 
 extern "C"

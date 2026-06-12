@@ -64,6 +64,8 @@ public class ECHPlayerView extends LinearLayout {
     private int scaleType = SCALE_TYPE_FIT_CENTER;
     /** 当前渲染模式。 */
     private int renderMode = ECHPlayer.RENDER_MODE_AUTO;
+    /** 当前解码模式。 */
+    private int decodeMode = ECHPlayer.DECODE_MODE_AUTO;
     /** 当前视频宽度。 */
     private int videoWidth = 0;
     /** 当前视频高度。 */
@@ -151,6 +153,18 @@ public class ECHPlayerView extends LinearLayout {
         return renderMode;
     }
 
+    /** 设置解码模式。 */
+    public void setDecodeMode(int decodeMode) {
+        this.decodeMode = normalizeDecodeMode(decodeMode);
+        applyDecodeModeToPlayer();
+        emitEvent("PlayerView decodeMode: " + decodeModeToText(this.decodeMode));
+    }
+
+    /** 返回当前解码模式。 */
+    public int getDecodeMode() {
+        return decodeMode;
+    }
+
     /** 设置播放地址。 */
     public void setVideoPath(String path) {
         videoPath = path == null ? "" : path.trim();
@@ -166,6 +180,7 @@ public class ECHPlayerView extends LinearLayout {
         }
         resetVideoSize();
         applyRenderModeToPlayer();
+        applyDecodeModeToPlayer();
 
         try {
             player.setDataSource(videoPath);
@@ -195,6 +210,7 @@ public class ECHPlayerView extends LinearLayout {
 
         applySurfaceScaleTypeToPlayer();
         applyRenderModeToPlayer();
+        applyDecodeModeToPlayer();
         player.setSurface(currentSurface);
         if (!player.isPrepared()) {
             String prepareResult = player.prepare();
@@ -340,6 +356,7 @@ public class ECHPlayerView extends LinearLayout {
         });
         applySurfaceScaleTypeToPlayer();
         applyRenderModeToPlayer();
+        applyDecodeModeToPlayer();
         if (surfaceReady && currentSurface != null && currentSurface.isValid()) {
             player.setSurface(currentSurface);
         }
@@ -355,6 +372,19 @@ public class ECHPlayerView extends LinearLayout {
             player.setRenderMode(renderMode);
         } catch (IllegalStateException e) {
             emitEvent("PlayerView renderMode ignored: " + e.getMessage());
+        }
+    }
+
+    /** 把当前解码模式应用到播放器。 */
+    private void applyDecodeModeToPlayer() {
+        if (player == null || player.isReleased()) {
+            return;
+        }
+
+        try {
+            player.setDecodeMode(decodeMode);
+        } catch (IllegalStateException e) {
+            emitEvent("PlayerView decodeMode ignored: " + e.getMessage());
         }
     }
 
@@ -474,6 +504,15 @@ public class ECHPlayerView extends LinearLayout {
         return ECHPlayer.RENDER_MODE_AUTO;
     }
 
+    /** 规范化外部传入的解码模式。 */
+    private int normalizeDecodeMode(int requestedDecodeMode) {
+        if (requestedDecodeMode == ECHPlayer.DECODE_MODE_SOFTWARE
+                || requestedDecodeMode == ECHPlayer.DECODE_MODE_MEDIACODEC) {
+            return requestedDecodeMode;
+        }
+        return ECHPlayer.DECODE_MODE_AUTO;
+    }
+
     /** 把比例模式转成易读文本。 */
     private String scaleTypeToText(int value) {
         if (value == SCALE_TYPE_CENTER_CROP) {
@@ -495,6 +534,17 @@ public class ECHPlayerView extends LinearLayout {
         }
         if (value == ECHPlayer.RENDER_MODE_NATIVE_WINDOW) {
             return "nativeWindow";
+        }
+        return "auto";
+    }
+
+    /** 把解码模式转成易读文本。 */
+    private String decodeModeToText(int value) {
+        if (value == ECHPlayer.DECODE_MODE_SOFTWARE) {
+            return "software";
+        }
+        if (value == ECHPlayer.DECODE_MODE_MEDIACODEC) {
+            return "mediacodec";
         }
         return "auto";
     }

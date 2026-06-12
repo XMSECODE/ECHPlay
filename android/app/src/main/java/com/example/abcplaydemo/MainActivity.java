@@ -83,6 +83,14 @@ public class MainActivity extends AppCompatActivity {
     private RadioButton renderModeOpenGlButton;
     /** NativeWindow 渲染模式按钮。 */
     private RadioButton renderModeNativeButton;
+    /** 解码模式组选框。 */
+    private RadioGroup decodeModeGroup;
+    /** 自动解码模式按钮。 */
+    private RadioButton decodeModeAutoButton;
+    /** 软件解码模式按钮。 */
+    private RadioButton decodeModeSoftwareButton;
+    /** 硬件解码模式按钮。 */
+    private RadioButton decodeModeMediaCodecButton;
     /** 播放模式组选框。 */
     private RadioGroup modeGroup;
     /** RTSP 模式按钮。 */
@@ -159,6 +167,10 @@ public class MainActivity extends AppCompatActivity {
         renderModeAutoButton = findViewById(R.id.renderModeAutoButton);
         renderModeOpenGlButton = findViewById(R.id.renderModeOpenGlButton);
         renderModeNativeButton = findViewById(R.id.renderModeNativeButton);
+        decodeModeGroup = findViewById(R.id.decodeModeGroup);
+        decodeModeAutoButton = findViewById(R.id.decodeModeAutoButton);
+        decodeModeSoftwareButton = findViewById(R.id.decodeModeSoftwareButton);
+        decodeModeMediaCodecButton = findViewById(R.id.decodeModeMediaCodecButton);
         modeGroup = findViewById(R.id.modeGroup);
         modeRtspButton = findViewById(R.id.modeRtspButton);
         modeLocalButton = findViewById(R.id.modeLocalButton);
@@ -191,6 +203,12 @@ public class MainActivity extends AppCompatActivity {
             if (player != null) {
                 player.setRenderMode(resolveRenderMode());
                 appendLog("renderMode: " + renderModeToText(player.getRenderMode()));
+            }
+        });
+        decodeModeGroup.setOnCheckedChangeListener((group, checkedId) -> {
+            if (player != null) {
+                player.setDecodeMode(resolveDecodeMode());
+                appendLog("decodeMode: " + decodeModeToText(player.getDecodeMode()));
             }
         });
 
@@ -362,6 +380,9 @@ public class MainActivity extends AppCompatActivity {
         text.append("Render mode: ");
         text.append(renderModeToText(resolveRenderMode()));
         text.append("\n\n");
+        text.append("Decode mode: ");
+        text.append(decodeModeToText(resolveDecodeMode()));
+        text.append("\n\n");
         sampleText.setText(text.toString());
 
         int playMode = modeGroup.getCheckedRadioButtonId() == R.id.modeLocalButton ? MODE_LOCAL : MODE_RTSP;
@@ -370,6 +391,7 @@ public class MainActivity extends AppCompatActivity {
 
             player.setSurface(surface);
             player.setRenderMode(resolveRenderMode());
+            player.setDecodeMode(resolveDecodeMode());
             player.setDataSource(dataSource);
 
             if (playMode == MODE_RTSP) {
@@ -386,6 +408,9 @@ public class MainActivity extends AppCompatActivity {
             String playInfo = player.start();
             appendLog(playInfo
                     + "\nrenderMode: " + renderModeToText(player.getRenderMode())
+                    + "\ndecodeMode: " + decodeModeToText(player.getDecodeMode())
+                    + "\ncurrentDecode: " + player.getCurrentDecodeType()
+                    + "\ndecoder: " + player.getCurrentDecoderName()
                     + "\nstate: " + player.getState());
             startProgressUpdates();
             updateRecordButtonState();
@@ -479,6 +504,29 @@ public class MainActivity extends AppCompatActivity {
         return "AUTO";
     }
 
+    /** 根据单选框解析当前解码模式。 */
+    private int resolveDecodeMode() {
+        int checkedId = decodeModeGroup.getCheckedRadioButtonId();
+        if (checkedId == R.id.decodeModeSoftwareButton) {
+            return ECHPlayer.DECODE_MODE_SOFTWARE;
+        }
+        if (checkedId == R.id.decodeModeMediaCodecButton) {
+            return ECHPlayer.DECODE_MODE_MEDIACODEC;
+        }
+        return ECHPlayer.DECODE_MODE_AUTO;
+    }
+
+    /** 把解码模式转换成日志文本。 */
+    private String decodeModeToText(int decodeMode) {
+        if (decodeMode == ECHPlayer.DECODE_MODE_SOFTWARE) {
+            return "SOFTWARE";
+        }
+        if (decodeMode == ECHPlayer.DECODE_MODE_MEDIACODEC) {
+            return "MEDIACODEC";
+        }
+        return "AUTO";
+    }
+
     /** 把任务安全切回主线程执行。 */
     private void postToUi(Runnable action) {
         if (Looper.myLooper() == Looper.getMainLooper()) {
@@ -543,6 +591,14 @@ public class MainActivity extends AppCompatActivity {
                 return "缓冲开始";
             case ECHPlayer.INFO_BUFFERING_END:
                 return "缓冲结束";
+            case ECHPlayer.INFO_DECODE_MODE_CHANGED:
+                return "当前解码方式变化";
+            case ECHPlayer.INFO_MEDIACODEC_OPENED:
+                return "MediaCodec 打开成功";
+            case ECHPlayer.INFO_MEDIACODEC_FALLBACK:
+                return "MediaCodec 回退软解";
+            case ECHPlayer.INFO_MEDIACODEC_UNSUPPORTED:
+                return "MediaCodec 不支持";
             default:
                 return "普通播放信息";
         }

@@ -127,6 +127,14 @@ public class ECHPlayer implements AutoCloseable {
     public static final int INFO_BUFFERING_START = 2011;
     /** 缓冲结束。 */
     public static final int INFO_BUFFERING_END = 2012;
+    /** 当前实际解码方式发生变化。 */
+    public static final int INFO_DECODE_MODE_CHANGED = 2013;
+    /** MediaCodec 硬解打开成功。 */
+    public static final int INFO_MEDIACODEC_OPENED = 2014;
+    /** MediaCodec 硬解失败并回退软解。 */
+    public static final int INFO_MEDIACODEC_FALLBACK = 2015;
+    /** 当前流或设备不支持 MediaCodec 硬解。 */
+    public static final int INFO_MEDIACODEC_UNSUPPORTED = 2016;
 
     /** prepare 完成监听器。 */
     public interface OnPreparedListener {
@@ -168,6 +176,12 @@ public class ECHPlayer implements AutoCloseable {
     public static final int RTSP_TRANSPORT_TCP = 0;
     /** RTSP 走 UDP 传输。 */
     public static final int RTSP_TRANSPORT_UDP = 1;
+    /** 解码模式：自动选择，后续优先硬解，失败回退软解。 */
+    public static final int DECODE_MODE_AUTO = 0;
+    /** 解码模式：强制使用 FFmpeg 软件解码。 */
+    public static final int DECODE_MODE_SOFTWARE = 1;
+    /** 解码模式：优先使用 MediaCodec 硬解，失败回退软解。 */
+    public static final int DECODE_MODE_MEDIACODEC = 2;
     /** Surface 渲染保持比例居中。 */
     public static final int SURFACE_SCALE_TYPE_FIT_CENTER = 0;
     /** Surface 渲染拉伸填满。 */
@@ -186,6 +200,10 @@ public class ECHPlayer implements AutoCloseable {
     public static final String OPTION_RTSP_TRANSPORT = "rtsp_transport";
     /** 渲染模式 option 名称。 */
     public static final String OPTION_RENDER_MODE = "render_mode";
+    /** 解码模式 option 名称。 */
+    public static final String OPTION_DECODE_MODE = "decode_mode";
+    /** ijkplayer 风格 MediaCodec 开关 option 名称。 */
+    public static final String OPTION_MEDIACODEC = "mediacodec";
     /** RTSP TCP option 值。 */
     public static final String OPTION_VALUE_TCP = "tcp";
     /** RTSP UDP option 值。 */
@@ -196,6 +214,12 @@ public class ECHPlayer implements AutoCloseable {
     public static final String OPTION_VALUE_RENDER_OPENGL = "opengl";
     /** 渲染模式 NativeWindow option 值。 */
     public static final String OPTION_VALUE_RENDER_NATIVE_WINDOW = "native_window";
+    /** 解码模式 AUTO option 值。 */
+    public static final String OPTION_VALUE_DECODE_AUTO = "auto";
+    /** 解码模式 SOFTWARE option 值。 */
+    public static final String OPTION_VALUE_DECODE_SOFTWARE = "software";
+    /** 解码模式 MEDIACODEC option 值。 */
+    public static final String OPTION_VALUE_DECODE_MEDIACODEC = "mediacodec";
     /** 打开输入超时时间 option 名称，单位微秒。 */
     public static final String OPTION_TIMEOUT = "timeout";
     /** 网络读取超时时间 option 名称，单位微秒。 */
@@ -229,6 +253,14 @@ public class ECHPlayer implements AutoCloseable {
     private int rtspTransport = RTSP_TRANSPORT_TCP;
     /** 当前渲染模式。 */
     private int renderMode = RENDER_MODE_AUTO;
+    /** 当前期望解码模式。 */
+    private int decodeMode = DECODE_MODE_AUTO;
+    /** 当前实际解码方式。 */
+    private String currentDecodeType = "software";
+    /** 当前实际解码器名称。 */
+    private String currentDecoderName = "ffmpeg";
+    /** 最近一次硬解回退原因。 */
+    private String lastDecodeFallbackReason = "";
     /** prepare 完成监听器。 */
     private OnPreparedListener onPreparedListener;
     /** 播放完成监听器。 */
@@ -341,6 +373,36 @@ public class ECHPlayer implements AutoCloseable {
         return renderMode;
     }
 
+    /** 设置解码模式，建议在 prepare 前调用。 */
+    public synchronized void setDecodeMode(int decodeMode) {
+        checkReleased();
+        this.decodeMode = normalizeDecodeMode(decodeMode);
+        nativeSetDecodeMode(nativeHandle, this.decodeMode);
+    }
+
+    /** 返回当前期望解码模式。 */
+    public synchronized int getDecodeMode() {
+        return decodeMode;
+    }
+
+    /** 返回当前实际解码方式，例如 software 或 mediacodec。 */
+    public synchronized String getCurrentDecodeType() {
+        updateDecodeInfoFromNative();
+        return currentDecodeType;
+    }
+
+    /** 返回当前实际解码器名称，例如 ffmpeg-h264 或 MediaCodec 名称。 */
+    public synchronized String getCurrentDecoderName() {
+        updateDecodeInfoFromNative();
+        return currentDecoderName;
+    }
+
+    /** 返回最近一次硬解失败回退原因。 */
+    public synchronized String getLastDecodeFallbackReason() {
+        updateDecodeInfoFromNative();
+        return lastDecodeFallbackReason;
+    }
+
     /** 设置 RTSP 传输方式。 */
     public synchronized void setRtspTransport(int transport) {
         checkReleased();
@@ -360,6 +422,14 @@ public class ECHPlayer implements AutoCloseable {
         }
         if (OPTION_RENDER_MODE.equals(name)) {
             setRenderMode((int) value);
+            return true;
+        }
+        if (OPTION_DECODE_MODE.equals(name)) {
+            setDecodeMode((int) value);
+            return true;
+        }
+        if (OPTION_MEDIACODEC.equals(name)) {
+            setDecodeMode(value == 0 ? DECODE_MODE_SOFTWARE : DECODE_MODE_MEDIACODEC);
             return true;
         }
 
@@ -389,6 +459,17 @@ public class ECHPlayer implements AutoCloseable {
             }
             return true;
         }
+        if (OPTION_DECODE_MODE.equals(name)) {
+            setDecodeMode(decodeModeFromText(value));
+            return true;
+        }
+        if (OPTION_MEDIACODEC.equals(name)) {
+            boolean enable = "1".equals(value)
+                    || "true".equalsIgnoreCase(value)
+                    || OPTION_VALUE_DECODE_MEDIACODEC.equalsIgnoreCase(value);
+            setDecodeMode(enable ? DECODE_MODE_MEDIACODEC : DECODE_MODE_SOFTWARE);
+            return true;
+        }
 
         try {
             return setOption(category, name, Long.parseLong(value));
@@ -406,6 +487,7 @@ public class ECHPlayer implements AutoCloseable {
         state = State.PREPARING;
         dispatchInfo(INFO_PREPARE_STARTED, "prepare started");
         lastPrepareResult = nativePrepare(nativeHandle);
+        updateDecodeInfoFromNative();
         prepared = lastPrepareResult != null && lastPrepareResult.startsWith("prepare success");
         playing = false;
         paused = false;
@@ -434,6 +516,7 @@ public class ECHPlayer implements AutoCloseable {
             synchronized (ECHPlayer.this) {
                 if (!released && nativeHandle != 0) {
                     lastPrepareResult = nativePrepare(nativeHandle);
+                    updateDecodeInfoFromNative();
                     prepared = lastPrepareResult != null
                             && lastPrepareResult.startsWith("prepare success");
                     playing = false;
@@ -554,6 +637,13 @@ public class ECHPlayer implements AutoCloseable {
         lastStartResult = "";
         rtspTransport = RTSP_TRANSPORT_TCP;
         renderMode = RENDER_MODE_AUTO;
+        decodeMode = DECODE_MODE_AUTO;
+        nativeSetDecodeMode(nativeHandle, decodeMode);
+        nativeSetRenderMode(nativeHandle, renderMode);
+        nativeSetRtspTransport(nativeHandle, rtspTransport);
+        currentDecodeType = "software";
+        currentDecoderName = "ffmpeg";
+        lastDecodeFallbackReason = "";
         recordingState = RecordingState.IDLE;
         lastRecordingPath = "";
         resetVideoSize();
@@ -1025,6 +1115,42 @@ public class ECHPlayer implements AutoCloseable {
         return RENDER_MODE_AUTO;
     }
 
+    /** 规范化外部传入的解码模式。 */
+    private int normalizeDecodeMode(int requestedDecodeMode) {
+        if (requestedDecodeMode == DECODE_MODE_SOFTWARE
+                || requestedDecodeMode == DECODE_MODE_MEDIACODEC) {
+            return requestedDecodeMode;
+        }
+        return DECODE_MODE_AUTO;
+    }
+
+    /** 根据字符串解析解码模式。 */
+    private int decodeModeFromText(String value) {
+        if (OPTION_VALUE_DECODE_SOFTWARE.equalsIgnoreCase(value)) {
+            return DECODE_MODE_SOFTWARE;
+        }
+        if (OPTION_VALUE_DECODE_MEDIACODEC.equalsIgnoreCase(value)
+                || "hardware".equalsIgnoreCase(value)
+                || "hard".equalsIgnoreCase(value)) {
+            return DECODE_MODE_MEDIACODEC;
+        }
+        return DECODE_MODE_AUTO;
+    }
+
+    /** 从 native 刷新当前实际解码信息。 */
+    private void updateDecodeInfoFromNative() {
+        if (nativeHandle == 0) {
+            return;
+        }
+
+        String decodeType = nativeGetCurrentDecodeType(nativeHandle);
+        String decoderName = nativeGetCurrentDecoderName(nativeHandle);
+        String fallbackReason = nativeGetLastDecodeFallbackReason(nativeHandle);
+        currentDecodeType = decodeType == null || decodeType.length() == 0 ? "software" : decodeType;
+        currentDecoderName = decoderName == null || decoderName.length() == 0 ? "ffmpeg" : decoderName;
+        lastDecodeFallbackReason = fallbackReason == null ? "" : fallbackReason;
+    }
+
     /** 在首帧解码后分发视频渲染开始事件。 */
     private void dispatchVideoRenderingStartIfReady() {
         if (videoRenderingStarted || state != State.STARTED) {
@@ -1105,6 +1231,9 @@ public class ECHPlayer implements AutoCloseable {
     /** 设置 NativePlayer 的渲染模式。 */
     private native void nativeSetRenderMode(long nativeHandle, int renderMode);
 
+    /** 设置 NativePlayer 的解码模式。 */
+    private native void nativeSetDecodeMode(long nativeHandle, int decodeMode);
+
     /** 设置 NativePlayer 的 RTSP 传输方式。 */
     private native void nativeSetRtspTransport(long nativeHandle, int transport);
 
@@ -1158,6 +1287,15 @@ public class ECHPlayer implements AutoCloseable {
 
     /** 调用 NativePlayer.isRecording。 */
     private native boolean nativeIsRecording(long nativeHandle);
+
+    /** 调用 NativePlayer.getCurrentDecodeType。 */
+    private native String nativeGetCurrentDecodeType(long nativeHandle);
+
+    /** 调用 NativePlayer.getCurrentDecoderName。 */
+    private native String nativeGetCurrentDecoderName(long nativeHandle);
+
+    /** 调用 NativePlayer.getLastDecodeFallbackReason。 */
+    private native String nativeGetLastDecodeFallbackReason(long nativeHandle);
 
     /** 调用 NativePlayer.getFFmpegVersion。 */
     private native String nativeGetFFmpegVersion(long nativeHandle);

@@ -36,6 +36,8 @@ static constexpr int PLAYER_ERROR_NETWORK_TIMEOUT = 1005;
 static constexpr int PLAYER_ERROR_UNKNOWN = 1999;
 static constexpr int PLAYER_INFO_BUFFERING_START = 2011;
 static constexpr int PLAYER_INFO_BUFFERING_END = 2012;
+static constexpr int PLAYER_INFO_DECODE_MODE_CHANGED = 2013;
+static constexpr int PLAYER_INFO_MEDIACODEC_UNSUPPORTED = 2016;
 
 /** 创建 Native 播放器实例并缓存 Java 回调。 */
 NativePlayer::NativePlayer(JavaVM *vm, JNIEnv *env, jobject javaPlayer)
@@ -53,6 +55,7 @@ NativePlayer::NativePlayer(JavaVM *vm, JNIEnv *env, jobject javaPlayer)
           audioClockUs(std::numeric_limits<int64_t>::min()),
           surfaceScaleType(0),
           renderMode(0),
+          decodeMode(0),
           glVideoRenderer(),
           glRenderFailed(false),
           swsContextCache(nullptr),
@@ -78,6 +81,9 @@ NativePlayer::NativePlayer(JavaVM *vm, JNIEnv *env, jobject javaPlayer)
           videoWidth(0),
           videoHeight(0),
           buffering(false),
+          currentDecodeType("software"),
+          currentDecoderName("ffmpeg"),
+          lastDecodeFallbackReason(),
           javaVm(vm),
           javaPlayerObject(nullptr),
           onNativeAudioInfoMethod(nullptr),
@@ -197,6 +203,12 @@ void NativePlayer::setRenderMode(int mode) {
         glVideoRenderer.release();
     }
     ECH_LOGI("setRenderMode: %d", renderMode.load());
+}
+
+/** 设置解码模式，0 自动，1 软解，2 硬解优先。 */
+void NativePlayer::setDecodeMode(int mode) {
+    decodeMode = (mode == 1 || mode == 2) ? mode : 0;
+    ECH_LOGI("setDecodeMode: %d", decodeMode.load());
 }
 
 /** 设置 RTSP 传输方式，0 为 TCP，1 为 UDP。 */
@@ -337,11 +349,16 @@ std::string NativePlayer::prepare() {
     AVStream *videoStream = formatContext->streams[videoStreamIndex];
     AVCodecParameters *videoCodecPar = videoStream->codecpar;
     updateVideoSize(videoCodecPar->width, videoCodecPar->height);
+    std::string softwareDecoderName = std::string("ffmpeg-")
+                                      + avcodec_get_name(videoCodecPar->codec_id);
+    updateDecodeInfo("software", softwareDecoderName, "");
 
     oss << "\n";
     oss << "video stream index: " << videoStreamIndex << "\n";
     oss << "video codec: " << avcodec_get_name(videoCodecPar->codec_id) << "\n";
     oss << "video size: " << videoCodecPar->width << "x" << videoCodecPar->height << "\n";
+    oss << "decode mode request: " << decodeMode.load() << "\n";
+    oss << "current decoder: " << getCurrentDecodeType() << " / " << getCurrentDecoderName() << "\n";
 
     if (videoStream->avg_frame_rate.num > 0 && videoStream->avg_frame_rate.den > 0) {
         double fps = av_q2d(videoStream->avg_frame_rate);
@@ -742,6 +759,24 @@ int NativePlayer::getVideoHeight() {
     return videoHeight;
 }
 
+/** 返回当前实际解码方式。 */
+std::string NativePlayer::getCurrentDecodeType() {
+    std::lock_guard<std::mutex> lock(decodeInfoMutex);
+    return currentDecodeType;
+}
+
+/** 返回当前实际解码器名称。 */
+std::string NativePlayer::getCurrentDecoderName() {
+    std::lock_guard<std::mutex> lock(decodeInfoMutex);
+    return currentDecoderName;
+}
+
+/** 返回最近一次硬解失败回退原因。 */
+std::string NativePlayer::getLastDecodeFallbackReason() {
+    std::lock_guard<std::mutex> lock(decodeInfoMutex);
+    return lastDecodeFallbackReason;
+}
+
 /** 解封装线程，负责读取原始包并分发给解码与录制。 */
 void NativePlayer::demuxLoop() {
     ECH_LOGI("demuxLoop start");
@@ -826,6 +861,7 @@ void NativePlayer::decodeLoop() {
         markPlaybackWorkerFinished();
         return;
     }
+    updateDecodeInfo("software", std::string("ffmpeg-") + decoder->name, "");
 
     AVFrame *frame = av_frame_alloc();
     if (frame == nullptr) {
@@ -2053,6 +2089,36 @@ void NativePlayer::notifyInfo(int infoCode, const std::string &message) {
     }
 
     releaseJNIEnv(needDetach);
+}
+
+/** 更新当前解码信息并通知 Java。 */
+void NativePlayer::updateDecodeInfo(
+        const std::string &decodeType,
+        const std::string &decoderName,
+        const std::string &fallbackReason) {
+    bool changed = false;
+    {
+        std::lock_guard<std::mutex> lock(decodeInfoMutex);
+        changed = currentDecodeType != decodeType
+                  || currentDecoderName != decoderName
+                  || lastDecodeFallbackReason != fallbackReason;
+        currentDecodeType = decodeType;
+        currentDecoderName = decoderName;
+        lastDecodeFallbackReason = fallbackReason;
+    }
+
+    if (!changed) {
+        return;
+    }
+
+    std::ostringstream message;
+    message << "decodeType: " << decodeType << "\n";
+    message << "decoder: " << decoderName;
+    if (!fallbackReason.empty()) {
+        message << "\n";
+        message << "fallbackReason: " << fallbackReason;
+    }
+    notifyInfo(PLAYER_INFO_DECODE_MODE_CHANGED, message.str());
 }
 
 /** 回调 Java 播放器错误事件。 */

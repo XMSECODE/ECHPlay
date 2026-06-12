@@ -41,6 +41,9 @@ public:
     /** 设置渲染模式，0 自动，1 OpenGL，2 NativeWindow。 */
     void setRenderMode(int renderMode);
 
+    /** 设置解码模式，0 自动，1 软解，2 硬解优先。 */
+    void setDecodeMode(int decodeMode);
+
     /** 设置 RTSP 传输方式，0 为 TCP，1 为 UDP。 */
     void setRtspTransport(int transport);
 
@@ -96,6 +99,15 @@ public:
     /** 获取当前视频高度。 */
     int getVideoHeight();
 
+    /** 获取当前实际解码方式。 */
+    std::string getCurrentDecodeType();
+
+    /** 获取当前实际解码器名称。 */
+    std::string getCurrentDecoderName();
+
+    /** 获取最近一次硬解回退原因。 */
+    std::string getLastDecodeFallbackReason();
+
     /** 获取 FFmpeg 版本字符串。 */
     std::string getFFmpegVersion();
 
@@ -136,6 +148,8 @@ private:
     std::atomic<int> surfaceScaleType;
     /** 当前渲染模式，0 自动，1 OpenGL，2 NativeWindow。 */
     std::atomic<int> renderMode;
+    /** 当前解码模式，0 自动，1 软解，2 硬解优先。 */
+    std::atomic<int> decodeMode;
     /** OpenGL ES 视频渲染器。 */
     GlVideoRenderer glVideoRenderer;
     /** OpenGL 渲染器互斥锁，避免 Surface 释放和渲染并发访问 EGL。 */
@@ -217,6 +231,14 @@ private:
     int videoHeight;
     /** 当前是否处于缓冲状态。 */
     std::atomic<bool> buffering;
+    /** 解码信息互斥锁。 */
+    std::mutex decodeInfoMutex;
+    /** 当前实际解码方式，software 或 mediacodec。 */
+    std::string currentDecodeType;
+    /** 当前实际解码器名称。 */
+    std::string currentDecoderName;
+    /** 最近一次硬解失败回退原因。 */
+    std::string lastDecodeFallbackReason;
 
     /** JavaVM 指针，用于子线程回调 Java。 */
     JavaVM *javaVm;
@@ -335,6 +357,13 @@ private:
 
     /** 回调 Java 播放器信息事件。 */
     void notifyInfo(int infoCode, const std::string &message);
+
+    /** 更新当前解码信息并通知 Java。 */
+    void updateDecodeInfo(
+            const std::string &decodeType,
+            const std::string &decoderName,
+            const std::string &fallbackReason
+    );
 
     /** 回调 Java 播放器错误事件。 */
     void notifyError(int errorCode, const std::string &message);

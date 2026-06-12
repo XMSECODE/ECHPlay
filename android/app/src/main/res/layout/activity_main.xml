@@ -163,6 +163,36 @@
 
         </LinearLayout>
 
+        <RadioGroup
+            android:id="@+id/decodeModeGroup"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal">
+
+            <RadioButton
+                android:id="@+id/decodeModeAutoButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:checked="true"
+                android:text="解码AUTO" />
+
+            <RadioButton
+                android:id="@+id/decodeModeSoftwareButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:text="软解" />
+
+            <RadioButton
+                android:id="@+id/decodeModeMediaCodecButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:text="硬解" />
+
+        </RadioGroup>
+
     </LinearLayout>
 
     <LinearLayout
