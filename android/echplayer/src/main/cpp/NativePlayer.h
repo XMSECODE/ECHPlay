@@ -14,6 +14,7 @@
 #include "GlVideoRenderer.h"
 
 struct AVFormatContext;
+struct AVCodecParameters;
 struct ANativeWindow;
 struct AVFrame;
 struct SwsContext;
@@ -385,6 +386,9 @@ private:
 
     /** 把 FFmpeg 错误码转成字符串。 */
     std::string makeErrorString(int ret);
+
+    /** 在 prepare 阶段探测 MediaCodec 是否可用。 */
+    std::string probeMediaCodecDecoder(const AVCodecParameters *codecParameters);
 };
 
 #endif // ECHPLAY_NATIVE_PLAYER_H

@@ -1,5 +1,7 @@
 #include "NativePlayer.h"
 
+#include "MediaCodecVideoDecoder.h"
+
 #include <android/log.h>
 #include <android/native_window.h>
 #include <algorithm>
@@ -37,6 +39,8 @@ static constexpr int PLAYER_ERROR_UNKNOWN = 1999;
 static constexpr int PLAYER_INFO_BUFFERING_START = 2011;
 static constexpr int PLAYER_INFO_BUFFERING_END = 2012;
 static constexpr int PLAYER_INFO_DECODE_MODE_CHANGED = 2013;
+static constexpr int PLAYER_INFO_MEDIACODEC_OPENED = 2014;
+static constexpr int PLAYER_INFO_MEDIACODEC_FALLBACK = 2015;
 static constexpr int PLAYER_INFO_MEDIACODEC_UNSUPPORTED = 2016;
 
 /** 创建 Native 播放器实例并缓存 Java 回调。 */
@@ -352,12 +356,16 @@ std::string NativePlayer::prepare() {
     std::string softwareDecoderName = std::string("ffmpeg-")
                                       + avcodec_get_name(videoCodecPar->codec_id);
     updateDecodeInfo("software", softwareDecoderName, "");
+    std::string mediaCodecProbeResult = probeMediaCodecDecoder(videoCodecPar);
 
     oss << "\n";
     oss << "video stream index: " << videoStreamIndex << "\n";
     oss << "video codec: " << avcodec_get_name(videoCodecPar->codec_id) << "\n";
     oss << "video size: " << videoCodecPar->width << "x" << videoCodecPar->height << "\n";
     oss << "decode mode request: " << decodeMode.load() << "\n";
+    if (!mediaCodecProbeResult.empty()) {
+        oss << "mediacodec probe: " << mediaCodecProbeResult << "\n";
+    }
     oss << "current decoder: " << getCurrentDecodeType() << " / " << getCurrentDecoderName() << "\n";
 
     if (videoStream->avg_frame_rate.num > 0 && videoStream->avg_frame_rate.den > 0) {
@@ -2221,6 +2229,56 @@ void NativePlayer::releaseJavaCallback() {
 /** 返回 FFmpeg 版本。 */
 std::string NativePlayer::getFFmpegVersion() {
     return std::string(av_version_info());
+}
+
+/** 在 prepare 阶段探测 MediaCodec 是否可用。 */
+std::string NativePlayer::probeMediaCodecDecoder(const AVCodecParameters *codecParameters) {
+    int requestedDecodeMode = decodeMode.load();
+    if (requestedDecodeMode == 1) {
+        return "skip: software mode";
+    }
+
+    if (codecParameters == nullptr) {
+        return "skip: invalid video codec parameters";
+    }
+
+    if (!MediaCodecVideoDecoder::isSupportedCodecId(codecParameters->codec_id)) {
+        std::string reason = std::string("unsupported codec: ")
+                             + avcodec_get_name(codecParameters->codec_id);
+        notifyInfo(PLAYER_INFO_MEDIACODEC_UNSUPPORTED, reason);
+        return reason;
+    }
+
+    MediaCodecVideoDecoder decoder;
+    MediaCodecVideoDecoder::Status status = decoder.configure(codecParameters);
+    if (status == MediaCodecVideoDecoder::Status::OK) {
+        std::string codecName = decoder.getCodecName();
+        notifyInfo(
+                PLAYER_INFO_MEDIACODEC_OPENED,
+                "mediacodec probe success\ncodec: " + codecName
+        );
+        decoder.release();
+        updateDecodeInfo(
+                "software",
+                std::string("ffmpeg-") + avcodec_get_name(codecParameters->codec_id),
+                ""
+        );
+        return "success: " + codecName + " available";
+    }
+
+    std::string reason = MediaCodecVideoDecoder::statusToString(status);
+    notifyInfo(
+            requestedDecodeMode == 2
+            ? PLAYER_INFO_MEDIACODEC_FALLBACK
+            : PLAYER_INFO_MEDIACODEC_UNSUPPORTED,
+            "mediacodec probe failed\nreason: " + reason
+    );
+    updateDecodeInfo(
+            "software",
+            std::string("ffmpeg-") + avcodec_get_name(codecParameters->codec_id),
+            reason
+    );
+    return "failed: " + reason;
 }
 
 /** 释放输入格式上下文。 */

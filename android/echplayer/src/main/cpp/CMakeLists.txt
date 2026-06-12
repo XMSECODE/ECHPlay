@@ -7,6 +7,7 @@ add_library(
         SHARED
         native-lib.cpp
         NativePlayer.cpp
+        MediaCodecVideoDecoder.cpp
         GlVideoRenderer.cpp
 )
 
@@ -32,6 +33,7 @@ set_target_properties(swscale PROPERTIES IMPORTED_LOCATION ${FFMPEG_LIB_DIR}/lib
 
 find_library(log-lib log)
 find_library(android-lib android)
+find_library(mediandk-lib mediandk)
 find_library(egl-lib EGL)
 find_library(glesv2-lib GLESv2)
 
@@ -45,6 +47,7 @@ target_link_libraries(
         swscale
 
         ${android-lib}
+        ${mediandk-lib}
         ${egl-lib}
         ${glesv2-lib}
         ${log-lib}
