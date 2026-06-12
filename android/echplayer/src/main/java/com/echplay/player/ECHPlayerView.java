@@ -343,7 +343,11 @@ public class ECHPlayerView extends LinearLayout {
 
         player = new ECHPlayer();
         player.setOnInfoListener((targetPlayer, infoCode, message) -> {
-            emitEvent("PlayerView info " + infoCode + "\n" + message);
+            emitEvent("PlayerView info " + infoCode
+                    + "\n" + message
+                    + "\ncurrentDecode: " + targetPlayer.getCurrentDecodeType()
+                    + "\ndecoder: " + targetPlayer.getCurrentDecoderName()
+                    + "\nfallbackReason: " + targetPlayer.getLastDecodeFallbackReason());
             return true;
         });
         player.setOnErrorListener((targetPlayer, errorCode, message) -> {
@@ -560,7 +564,8 @@ public class ECHPlayerView extends LinearLayout {
             File outputFile = buildOutputFile(SCREENSHOT_DIR, "png");
             ECHPlayer.CaptureResult result = player.captureCurrentFramePng(outputFile.getAbsolutePath());
             emitEvent("PlayerView capture success\nfile: " + result.filePath
-                    + "\nsize: " + result.width + "x" + result.height);
+                    + "\nsize: " + result.width + "x" + result.height
+                    + "\ndecodeSource: decoded frame, not SurfaceView");
         } catch (Exception e) {
             emitEvent("PlayerView capture failed: " + e.getMessage());
         }
@@ -577,6 +582,7 @@ public class ECHPlayerView extends LinearLayout {
 
         File outputFile = buildOutputFile(RECORD_DIR, "mkv");
         emitEvent(player.startRecording(outputFile.getAbsolutePath()));
+        emitEvent("PlayerView record source: demux packet stream, not screen recording");
         updateRecordButtonState();
     }
 

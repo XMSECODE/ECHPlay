@@ -1101,20 +1101,33 @@ bool NativePlayer::tryMediaCodecDecodeLoop(
     bool sentEndOfStream = false;
     bool outputEndOfStream = false;
     bool hardDecodeFailed = false;
+    bool hasPendingPacket = false;
+    AVPacket pendingPacket = {0};
     std::string fallbackReason;
 
     while (!stopRequested.load() && !outputEndOfStream) {
         if (!sentEndOfStream) {
-            AVPacket packet = {0};
-            if (dequeueVideoPacket(&packet)) {
-                int64_t packetPts = packet.pts != AV_NOPTS_VALUE ? packet.pts : packet.dts;
+            if (!hasPendingPacket) {
+                hasPendingPacket = dequeueVideoPacket(&pendingPacket);
+            }
+
+            if (hasPendingPacket) {
+                int64_t packetPts = pendingPacket.pts != AV_NOPTS_VALUE
+                                    ? pendingPacket.pts
+                                    : pendingPacket.dts;
                 int64_t ptsUs = packetPts != AV_NOPTS_VALUE
                                 ? av_rescale_q(packetPts, videoStream->time_base, AV_TIME_BASE_Q)
                                 : 0;
-                status = decoder.queueInput(packet.data, static_cast<size_t>(packet.size), ptsUs, false);
-                av_packet_unref(&packet);
-                if (status != MediaCodecVideoDecoder::Status::OK
-                    && status != MediaCodecVideoDecoder::Status::INPUT_TRY_AGAIN) {
+                status = decoder.queueInput(
+                        pendingPacket.data,
+                        static_cast<size_t>(pendingPacket.size),
+                        ptsUs,
+                        false
+                );
+                if (status == MediaCodecVideoDecoder::Status::OK) {
+                    av_packet_unref(&pendingPacket);
+                    hasPendingPacket = false;
+                } else if (status != MediaCodecVideoDecoder::Status::INPUT_TRY_AGAIN) {
                     hardDecodeFailed = true;
                     fallbackReason = MediaCodecVideoDecoder::statusToString(status);
                     break;
@@ -1153,6 +1166,9 @@ bool NativePlayer::tryMediaCodecDecodeLoop(
             fallbackReason = MediaCodecVideoDecoder::statusToString(status);
             break;
         }
+    }
+    if (hasPendingPacket) {
+        av_packet_unref(&pendingPacket);
     }
 
     decoder.release();

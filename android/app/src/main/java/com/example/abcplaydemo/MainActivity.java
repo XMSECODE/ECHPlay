@@ -121,6 +121,8 @@ public class MainActivity extends AppCompatActivity {
     private TextView currentTimeText;
     /** 总时长文本。 */
     private TextView durationTimeText;
+    /** 当前解码状态文本。 */
+    private TextView decodeStatusText;
     /** 日志文本。 */
     private TextView sampleText;
     /** Java 播放器实例。 */
@@ -186,6 +188,7 @@ public class MainActivity extends AppCompatActivity {
         progressSeekBar = findViewById(R.id.progressSeekBar);
         currentTimeText = findViewById(R.id.currentTimeText);
         durationTimeText = findViewById(R.id.durationTimeText);
+        decodeStatusText = findViewById(R.id.decodeStatusText);
         sampleText = findViewById(R.id.sample_text);
 
         restorePlayMode();
@@ -193,6 +196,7 @@ public class MainActivity extends AppCompatActivity {
         sampleText.setText("等待 Surface 创建...");
         currentTimeText.setText(formatTime(0));
         durationTimeText.setText(formatTime(0));
+        updateDecodeStatusUi();
         updateRecordButtonState();
 
         modeGroup.setOnCheckedChangeListener((group, checkedId) -> {
@@ -209,6 +213,7 @@ public class MainActivity extends AppCompatActivity {
             if (player != null) {
                 player.setDecodeMode(resolveDecodeMode());
                 appendLog("decodeMode: " + decodeModeToText(player.getDecodeMode()));
+                updateDecodeStatusUi();
             }
         });
 
@@ -401,6 +406,7 @@ public class MainActivity extends AppCompatActivity {
 
             String prepareInfo = player.prepare();
             appendLog(prepareInfo);
+            updateDecodeStatusUi();
             durationMs = Math.max(0, player.getDuration());
             durationTimeText.setText(formatTime(durationMs));
             updateSeekableUi();
@@ -411,7 +417,9 @@ public class MainActivity extends AppCompatActivity {
                     + "\ndecodeMode: " + decodeModeToText(player.getDecodeMode())
                     + "\ncurrentDecode: " + player.getCurrentDecodeType()
                     + "\ndecoder: " + player.getCurrentDecoderName()
+                    + "\nfallbackReason: " + player.getLastDecodeFallbackReason()
                     + "\nstate: " + player.getState());
+            updateDecodeStatusUi();
             startProgressUpdates();
             updateRecordButtonState();
 
@@ -453,6 +461,7 @@ public class MainActivity extends AppCompatActivity {
         targetPlayer.setOnInfoListener((callbackPlayer, infoCode, message) -> {
             postToUi(() -> {
                 updateRecordButtonState();
+                updateDecodeStatusUi();
                 appendLog(
                         "信息码 " + infoCode + ": " + describeInfoCode(infoCode)
                                 + "\nmessage: " + message
@@ -765,6 +774,32 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    /** 更新当前解码状态展示。 */
+    private void updateDecodeStatusUi() {
+        if (decodeStatusText == null) {
+            return;
+        }
+
+        if (player == null) {
+            decodeStatusText.setText("当前解码：未开始");
+            return;
+        }
+
+        String fallbackReason = player.getLastDecodeFallbackReason();
+        StringBuilder builder = new StringBuilder();
+        builder.append("目标解码：");
+        builder.append(decodeModeToText(player.getDecodeMode()));
+        builder.append("  当前：");
+        builder.append(player.getCurrentDecodeType());
+        builder.append("  解码器：");
+        builder.append(player.getCurrentDecoderName());
+        if (fallbackReason != null && fallbackReason.length() > 0) {
+            builder.append("  回退：");
+            builder.append(fallbackReason);
+        }
+        decodeStatusText.setText(builder.toString());
+    }
+
     /** 把最近一帧解码后的 RGBA 数据保存为 PNG。 */
     private void captureCurrentFrame() {
         if (player == null) {
@@ -781,7 +816,9 @@ public class MainActivity extends AppCompatActivity {
                             + "\nfile: " + result.filePath
                             + "\nsize: " + result.width + "x" + result.height
                             + "\ntimestampMs: " + result.timestampMs
+                            + "\ndecodeSource: decoded frame, not SurfaceView"
             );
+            updateDecodeStatusUi();
         } catch (IOException e) {
             appendLog("capture failed: " + e.getMessage());
         }
@@ -804,7 +841,8 @@ public class MainActivity extends AppCompatActivity {
         currentRecordingPath = outputFile.getAbsolutePath();
         appendLog(player.startRecording(currentRecordingPath));
         appendLog("record state: " + player.getRecordingState()
-                + "\nfile: " + player.getLastRecordingPath());
+                + "\nfile: " + player.getLastRecordingPath()
+                + "\nrecordSource: demux packet stream, not screen recording");
         if (!player.isRecording()) {
             currentRecordingPath = null;
         }

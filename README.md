@@ -1,8 +1,8 @@
 # ECHPlay
 
-ECHPlay 是一个基于 FFmpeg 的 Android 软解播放器项目。v1.3 的重点是渲染链路升级：播放器能力已经从 Demo app 拆成独立 `echplayer` Android library module，并新增 OpenGL ES、YUV420P 三纹理、渲染模式切换、视频尺寸回调和 `ECHPlayerView` 画面比例控制。
+ECHPlay 是一个基于 FFmpeg 和 Android MediaCodec 的 Android 播放器项目。v1.4 的重点是补齐硬解能力：在 v1.3 OpenGL ES、YUV420P 三纹理、渲染模式切换、视频尺寸回调和 `ECHPlayerView` 画面比例控制基础上，新增 H.264 / H.265 MediaCodec 硬解、软硬解切换、失败回退和当前解码方式展示。
 
-## v1.3 能力
+## v1.4 能力
 
 1. 独立播放器库：`android/echplayer` 使用 `com.android.library`，namespace 为 `com.echplay.player`。
 2. 纯 Demo app：`android/app` 只保留页面、布局、图标、测试资源和示例交互。
@@ -17,6 +17,10 @@ ECHPlay 是一个基于 FFmpeg 的 Android 软解播放器项目。v1.3 的重�
 11. 画面比例：`ECHPlayerView` 支持 `fitCenter`、`centerCrop`、`fill`、`original`。
 12. 视频尺寸：Java 层支持视频宽高变化回调和宽高读取。
 13. 截图录制：截图仍保存当前解码帧 PNG，录制仍走 FFmpeg 封装输出，不依赖 Surface 截屏。
+14. 解码模式：支持 `AUTO`、`SOFTWARE`、`MEDIACODEC` 三种模式。
+15. MediaCodec：支持 H.264 / H.265 的硬解基础路径。
+16. 失败回退：硬解不可用、输出格式不支持或送取帧失败时会回退 FFmpeg 软解。
+17. 状态展示：Java API 和 Demo 可查看目标解码模式、当前实际解码方式、解码器名称和回退原因。
 
 ## 快速运行 Demo
 
@@ -88,6 +92,7 @@ dependencies {
 ECHPlayer player = new ECHPlayer();
 player.setSurface(surface);
 player.setRenderMode(ECHPlayer.RENDER_MODE_AUTO);
+player.setDecodeMode(ECHPlayer.DECODE_MODE_AUTO);
 player.setDataSource("/sdcard/Movies/test.mp4");
 player.prepare();
 player.start();
@@ -99,6 +104,7 @@ RTSP 示例：
 ECHPlayer player = new ECHPlayer();
 player.setSurface(surface);
 player.setRenderMode(ECHPlayer.RENDER_MODE_AUTO);
+player.setDecodeMode(ECHPlayer.DECODE_MODE_AUTO);
 player.setDataSource("rtsp://192.168.1.1:554/live");
 player.setRtspTransport(ECHPlayer.RTSP_TRANSPORT_TCP);
 player.setOption(ECHPlayer.OPTION_CATEGORY_FORMAT, ECHPlayer.OPTION_TIMEOUT, 5_000_000L);
@@ -152,6 +158,42 @@ player.setOption(
 );
 ```
 
+解码模式示例：
+
+```java
+// 默认推荐：H.264 / H.265 优先尝试 MediaCodec，失败回退 FFmpeg 软解。
+player.setDecodeMode(ECHPlayer.DECODE_MODE_AUTO);
+
+// 强制软解：完全不创建 MediaCodec。
+player.setDecodeMode(ECHPlayer.DECODE_MODE_SOFTWARE);
+
+// 硬解优先：优先 MediaCodec，失败时回退软解并通过 info 回调说明原因。
+player.setDecodeMode(ECHPlayer.DECODE_MODE_MEDIACODEC);
+
+// 也可以使用 option，方便对齐 ijkplayer 风格配置。
+player.setOption(
+        ECHPlayer.OPTION_CATEGORY_PLAYER,
+        ECHPlayer.OPTION_DECODE_MODE,
+        ECHPlayer.OPTION_VALUE_DECODE_MEDIACODEC
+);
+player.setOption(ECHPlayer.OPTION_CATEGORY_PLAYER, ECHPlayer.OPTION_MEDIACODEC, 1L);
+```
+
+读取当前解码状态：
+
+```java
+String currentDecodeType = player.getCurrentDecodeType();       // software 或 mediacodec
+String decoderName = player.getCurrentDecoderName();            // ffmpeg-h264、video/avc 等
+String fallbackReason = player.getLastDecodeFallbackReason();   // 硬解失败回退原因
+```
+
+解码状态 info：
+
+1. `INFO_DECODE_MODE_CHANGED`：当前实际解码方式变化。
+2. `INFO_MEDIACODEC_OPENED`：MediaCodec 创建并启动成功。
+3. `INFO_MEDIACODEC_FALLBACK`：硬解失败，已回退软解。
+4. `INFO_MEDIACODEC_UNSUPPORTED`：当前编码或设备不支持硬解。
+
 截图示例：
 
 ```java
@@ -171,6 +213,8 @@ player.startRecording(outputPath);
 ECHPlayer.RecordingState state = player.getRecordingState();
 player.stopRecording();
 ```
+
+录制说明：录制保存的是当前播放中的 demux packet 码流封装结果，不是屏幕录制。因此软解和硬解模式下录制行为一致。
 
 页面退出时释放：
 
@@ -196,6 +240,7 @@ ECHPlayerView playerView = findViewById(R.id.playerView);
 playerView.setVideoPath("rtsp://192.168.1.1:554/live");
 playerView.setRtspTransport(ECHPlayer.RTSP_TRANSPORT_TCP);
 playerView.setRenderMode(ECHPlayer.RENDER_MODE_AUTO);
+playerView.setDecodeMode(ECHPlayer.DECODE_MODE_AUTO);
 playerView.setScaleType(ECHPlayerView.SCALE_TYPE_FIT_CENTER);
 playerView.start();
 ```
@@ -230,9 +275,10 @@ playerView.release();
 2. 本地文件：切到“本地文件”，输入路径或通过“选择文件”选择视频。
 3. PlayerView Demo：点击 `PlayerView` 按钮打开 `PlayerViewDemoActivity`。
 4. 渲染模式：主页面和 PlayerView Demo 均可切换 `AUTO`、`OpenGL`、`NativeWindow`。
-5. 画面比例：PlayerView Demo 可切换 `fit`、`crop`、`fill`、`original`。
+5. 解码模式：主页面和 PlayerView Demo 均可切换 `解码AUTO`、`软解`、`硬解`。
+6. 画面比例：PlayerView Demo 可切换 `fit`、`crop`、`fill`、`original`。
 
-主页面会展示播放器状态、错误码、info 回调、缓冲事件、视频尺寸、渲染模式、截图路径、录制状态和录制文件路径。
+主页面会展示播放器状态、错误码、info 回调、缓冲事件、视频尺寸、渲染模式、目标解码模式、当前实际解码方式、解码器名称、硬解回退原因、截图路径、录制状态和录制文件路径。
 
 ## ABI 状态
 
@@ -272,7 +318,7 @@ android/echplayer/src/main/cpp/ffmpeg/include
 android/echplayer/src/main/jniLibs/arm64-v8a
 ```
 
-## v1.3 验证清单
+## v1.4 验证清单
 
 构建验证：
 
@@ -290,28 +336,33 @@ android/echplayer/src/main/jniLibs/arm64-v8a
 
 功能回归：
 
-1. 本地 MP4 在 `AUTO` 模式播放，确认画面和声音正常。
-2. 本地 MP4 在 `OpenGL` 模式播放，确认 YUV420P 三纹理路径可显示或能明确回退。
-3. 本地 MP4 在 `NativeWindow` 模式播放，确认兼容路径正常。
-4. 本地 MP4 控制：测试暂停、继续、停止、重新播放。
-5. seek：对本地 MP4 连续拖动，确认不死锁，seek 后音视频能恢复。
-6. RTSP TCP：输入 RTSP URL，选择 TCP，确认能播放或返回明确错误。
-7. RTSP UDP：输入同一 RTSP URL，选择 UDP，确认兼容性和错误提示。
-8. 直播流 seek：RTSP 直播流拖动时提示不支持 seek。
-9. 视频尺寸：prepare 后 Demo 日志能显示视频宽高变化。
-10. PlayerView 比例：切换 `fit`、`crop`、`fill`、`original`，横屏和竖屏视频布局正常。
-11. 截图：OpenGL 模式播放中点击截图，确认保存的是当前解码帧 PNG。
-12. 截图：NativeWindow 模式播放中点击截图，确认保存的是当前解码帧 PNG。
-13. 录制：OpenGL 模式播放中开始录制后停止录制，确认文件能生成。
-14. 录制：NativeWindow 模式播放中开始录制后停止录制，确认文件能生成。
-15. 录制中停止播放：开始录制后点停止或退出页面，确认录制能安全停止。
-16. PlayerView Demo：只通过组件按钮完成播放、暂停、停止、截图、录制。
-17. 资源释放：连续进入和退出 PlayerView Demo，多次播放、停止、重新播放，不崩溃。
+1. 本地 H.264 MP4 在 `DECODE_MODE_AUTO` 播放，确认 Demo 显示 `mediacodec` 或明确回退 `software`。
+2. 本地 H.264 MP4 在 `DECODE_MODE_SOFTWARE` 播放，确认不会创建 MediaCodec，Demo 显示 `software`。
+3. 本地 H.264 MP4 在 `DECODE_MODE_MEDIACODEC` 播放，确认硬解成功或显示清晰回退原因。
+4. 本地 H.265 MP4 在支持 HEVC 的设备上播放，确认 Demo 显示硬解或设备限制。
+5. 本地 H.265 MP4 在不支持 HEVC 的设备上播放，确认自动回退软解，不崩溃。
+6. 本地 MP4 在 `OpenGL` 模式播放，确认 YUV420P 三纹理路径可显示或能明确回退。
+7. 本地 MP4 在 `NativeWindow` 模式播放，确认兼容路径正常。
+8. 本地 MP4 控制：测试暂停、继续、停止、重新播放。
+9. seek：对本地 MP4 连续拖动，确认不死锁，seek 后音视频能恢复。
+10. RTSP TCP：输入 RTSP URL，选择 TCP，确认能播放或返回明确错误。
+11. RTSP UDP：输入同一 RTSP URL，选择 UDP，确认兼容性和错误提示。
+12. RTSP H.264：在 `DECODE_MODE_AUTO` 下播放，确认可硬解或回退软解。
+13. 直播流 seek：RTSP 直播流拖动时提示不支持 seek。
+14. 视频尺寸：prepare 后 Demo 日志能显示视频宽高变化。
+15. 解码状态：Demo 固定状态栏能显示目标解码、当前解码、解码器和回退原因。
+16. PlayerView 比例：切换 `fit`、`crop`、`fill`、`original`，横屏和竖屏视频布局正常。
+17. 截图：软解播放中点击截图，确认保存的是当前解码帧 PNG。
+18. 截图：硬解播放中点击截图，确认保存的是当前解码帧 PNG，不是 SurfaceView 画面。
+19. 录制：软解播放中开始录制后停止录制，确认文件能生成。
+20. 录制：硬解播放中开始录制后停止录制，确认文件能生成，录制来源是 demux packet 码流。
+21. 录制中停止播放：开始录制后点停止或退出页面，确认录制能安全停止。
+22. PlayerView Demo：只通过组件按钮完成播放、暂停、停止、截图、录制。
+23. 资源释放：连续进入和退出 PlayerView Demo，多次播放、停止、重新播放，不崩溃。
 
 ## 后续方向
 
-1. v1.4：MediaCodec H.264 / H.265 硬解。
-2. v1.4：软硬解切换和失败回退。
-3. v1.4：当前解码方式展示。
-4. 后续版本：自动重连和更完整的网络流协议兼容。
-5. 后续版本：字幕、多音轨和更多像素格式渲染兼容。
+1. 后续版本：自动重连和更完整的网络流协议兼容。
+2. 后续版本：字幕、多音轨和更多像素格式渲染兼容。
+3. 后续版本：SurfaceTexture / Surface 零拷贝硬解渲染路径。
+4. 后续版本：更完整的机型黑名单 / 白名单和性能统计面板。
