@@ -840,6 +840,11 @@ void NativePlayer::decodeLoop() {
     AVStream *videoStream = formatContext->streams[videoStreamIndex];
     AVCodecParameters *codecParameters = videoStream->codecpar;
 
+    if (tryMediaCodecDecodeLoop(videoStream, codecParameters)) {
+        markPlaybackWorkerFinished();
+        return;
+    }
+
     const AVCodec *decoder = avcodec_find_decoder(codecParameters->codec_id);
     if (decoder == nullptr) {
         ECH_LOGE("decoder not found");
@@ -1033,6 +1038,176 @@ void NativePlayer::decodeLoop() {
     avcodec_free_context(&codecContext);
 
     markPlaybackWorkerFinished();
+}
+
+/** 尝试使用 MediaCodec 硬解视频，失败时返回 false 让上层回退软解。 */
+bool NativePlayer::tryMediaCodecDecodeLoop(
+        AVStream *videoStream,
+        const AVCodecParameters *codecParameters) {
+    if (videoStream == nullptr || codecParameters == nullptr) {
+        return false;
+    }
+
+    int requestedDecodeMode = decodeMode.load();
+    if (requestedDecodeMode == 1) {
+        return false;
+    }
+
+    if (!MediaCodecVideoDecoder::isSupportedCodecId(codecParameters->codec_id)) {
+        notifyInfo(
+                PLAYER_INFO_MEDIACODEC_UNSUPPORTED,
+                std::string("unsupported codec: ") + avcodec_get_name(codecParameters->codec_id)
+        );
+        return false;
+    }
+
+    MediaCodecVideoDecoder decoder;
+    MediaCodecVideoDecoder::Status status = decoder.configure(codecParameters);
+    if (status != MediaCodecVideoDecoder::Status::OK) {
+        std::string reason = MediaCodecVideoDecoder::statusToString(status);
+        notifyInfo(
+                requestedDecodeMode == 2
+                ? PLAYER_INFO_MEDIACODEC_FALLBACK
+                : PLAYER_INFO_MEDIACODEC_UNSUPPORTED,
+                "mediacodec start failed\nreason: " + reason
+        );
+        updateDecodeInfo(
+                "software",
+                std::string("ffmpeg-") + avcodec_get_name(codecParameters->codec_id),
+                reason
+        );
+        return false;
+    }
+
+    std::string mediaCodecName = decoder.getCodecName();
+    updateDecodeInfo("mediacodec", mediaCodecName, "");
+    notifyInfo(PLAYER_INFO_MEDIACODEC_OPENED, "mediacodec opened\ncodec: " + mediaCodecName);
+
+    double fps = 30.0;
+    if (videoStream->avg_frame_rate.num > 0 && videoStream->avg_frame_rate.den > 0) {
+        fps = av_q2d(videoStream->avg_frame_rate);
+    }
+    if (fps <= 0.0 || fps > 120.0) {
+        fps = 30.0;
+    }
+
+    int64_t frameDurationUs = static_cast<int64_t>(1000000.0 / fps);
+    if (frameDurationUs <= 0) {
+        frameDurationUs = 33333;
+    }
+
+    int decodedFrameCount = 0;
+    int outputTryAgainCount = 0;
+    bool sentEndOfStream = false;
+    bool outputEndOfStream = false;
+    bool hardDecodeFailed = false;
+    std::string fallbackReason;
+
+    while (!stopRequested.load() && !outputEndOfStream) {
+        if (!sentEndOfStream) {
+            AVPacket packet = {0};
+            if (dequeueVideoPacket(&packet)) {
+                int64_t packetPts = packet.pts != AV_NOPTS_VALUE ? packet.pts : packet.dts;
+                int64_t ptsUs = packetPts != AV_NOPTS_VALUE
+                                ? av_rescale_q(packetPts, videoStream->time_base, AV_TIME_BASE_Q)
+                                : 0;
+                status = decoder.queueInput(packet.data, static_cast<size_t>(packet.size), ptsUs, false);
+                av_packet_unref(&packet);
+                if (status != MediaCodecVideoDecoder::Status::OK
+                    && status != MediaCodecVideoDecoder::Status::INPUT_TRY_AGAIN) {
+                    hardDecodeFailed = true;
+                    fallbackReason = MediaCodecVideoDecoder::statusToString(status);
+                    break;
+                }
+            } else if (demuxFinished.load()) {
+                status = decoder.queueInput(nullptr, 0, 0, true);
+                sentEndOfStream = status == MediaCodecVideoDecoder::Status::OK;
+            }
+        }
+
+        MediaCodecVideoDecoder::DecodedVideoFrame decodedFrame;
+        status = decoder.dequeueOutput(decodedFrame, 10000);
+        if (status == MediaCodecVideoDecoder::Status::OK) {
+            outputTryAgainCount = 0;
+            while (paused.load() && !stopRequested.load()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            if (stopRequested.load()) {
+                break;
+            }
+            renderMediaCodecFrame(decodedFrame);
+            decodedFrameCount++;
+            std::this_thread::sleep_for(std::chrono::microseconds(frameDurationUs));
+        } else if (status == MediaCodecVideoDecoder::Status::OUTPUT_FORMAT_CHANGED
+                   || status == MediaCodecVideoDecoder::Status::OUTPUT_TRY_AGAIN) {
+            outputTryAgainCount++;
+            if (outputTryAgainCount > 300 && !demuxFinished.load()) {
+                hardDecodeFailed = true;
+                fallbackReason = "mediacodec output timeout";
+                break;
+            }
+        } else if (status == MediaCodecVideoDecoder::Status::OUTPUT_END_OF_STREAM) {
+            outputEndOfStream = true;
+        } else {
+            hardDecodeFailed = true;
+            fallbackReason = MediaCodecVideoDecoder::statusToString(status);
+            break;
+        }
+    }
+
+    decoder.release();
+
+    if (hardDecodeFailed || decodedFrameCount == 0) {
+        if (fallbackReason.empty()) {
+            fallbackReason = decodedFrameCount == 0 ? "no mediacodec output frame" : "unknown";
+        }
+        notifyInfo(
+                PLAYER_INFO_MEDIACODEC_FALLBACK,
+                "mediacodec fallback\nreason: " + fallbackReason
+        );
+        updateDecodeInfo(
+                "software",
+                std::string("ffmpeg-") + avcodec_get_name(codecParameters->codec_id),
+                fallbackReason
+        );
+        return false;
+    }
+
+    ECH_LOGI("MediaCodec decode finished, decodedFrameCount=%d", decodedFrameCount);
+    return true;
+}
+
+/** 将 MediaCodec 输出帧包装成 AVFrame 并走现有渲染链路。 */
+bool NativePlayer::renderMediaCodecFrame(
+        const MediaCodecVideoDecoder::DecodedVideoFrame &decodedFrame) {
+    if (decodedFrame.width <= 0
+        || decodedFrame.height <= 0
+        || decodedFrame.yPlane.empty()
+        || decodedFrame.uPlane.empty()
+        || decodedFrame.vPlane.empty()) {
+        return false;
+    }
+
+    AVFrame *frame = av_frame_alloc();
+    if (frame == nullptr) {
+        return false;
+    }
+
+    frame->format = AV_PIX_FMT_YUV420P;
+    frame->width = decodedFrame.width;
+    frame->height = decodedFrame.height;
+    frame->pts = decodedFrame.ptsUs;
+    frame->best_effort_timestamp = decodedFrame.ptsUs;
+    frame->data[0] = const_cast<uint8_t *>(decodedFrame.yPlane.data());
+    frame->data[1] = const_cast<uint8_t *>(decodedFrame.uPlane.data());
+    frame->data[2] = const_cast<uint8_t *>(decodedFrame.vPlane.data());
+    frame->linesize[0] = decodedFrame.yStride;
+    frame->linesize[1] = decodedFrame.uStride;
+    frame->linesize[2] = decodedFrame.vStride;
+
+    bool rendered = renderFrameToSurface(frame);
+    av_frame_free(&frame);
+    return rendered;
 }
 
 /** 把解码后视频帧渲染到 Surface。 */

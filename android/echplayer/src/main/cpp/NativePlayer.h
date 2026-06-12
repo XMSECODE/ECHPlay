@@ -12,9 +12,11 @@
 #include <vector>
 
 #include "GlVideoRenderer.h"
+#include "MediaCodecVideoDecoder.h"
 
 struct AVFormatContext;
 struct AVCodecParameters;
+struct AVStream;
 struct ANativeWindow;
 struct AVFrame;
 struct SwsContext;
@@ -279,6 +281,15 @@ private:
 
     /** 视频解码线程循环。 */
     void decodeLoop();
+
+    /** 尝试使用 MediaCodec 硬解视频，失败时返回 false 让上层回退软解。 */
+    bool tryMediaCodecDecodeLoop(
+            AVStream *videoStream,
+            const AVCodecParameters *codecParameters
+    );
+
+    /** 将 MediaCodec 输出帧包装成 AVFrame 并走现有渲染链路。 */
+    bool renderMediaCodecFrame(const MediaCodecVideoDecoder::DecodedVideoFrame &decodedFrame);
 
     /** 音频解码线程循环。 */
     void audioDecodeLoop();
