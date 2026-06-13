@@ -22,7 +22,7 @@ ECHPlay 是一个基于 FFmpeg 和 Android MediaCodec 的 Android 播放器项�
 16. 失败回退：硬解不可用、输出格式不支持或送取帧失败时会回退 FFmpeg 软解。
 17. 状态展示：Java API 和 Demo 可查看目标解码模式、当前实际解码方式、解码器名称和回退原因。
 
-## v1.5 目标（开发中）
+## v1.5 目标（已完成本轮规划）
 
 v1.5 的目标不是一次性追平 ijkplayer 的全部协议和弱网经验，而是先建立“可播放、可诊断、可恢复、可验证”的网络播放闭环。
 
@@ -42,11 +42,11 @@ v1.5 的目标不是一次性追平 ijkplayer 的全部协议和弱网经验，�
 | 协议 | 当前代码路径 | v1.5 目标 | 当前验证状态 | 说明 |
 | --- | --- | --- | --- | --- |
 | 本地文件 | 已支持 | 回归验证 | v1.4 已验证 | v1.5 需要确保不退化 |
-| RTSP TCP | 已支持入口 | 真实源验证、断流重连 | 待验证 | 需要真实摄像头或稳定 RTSP server |
-| RTSP UDP | 已支持入口 | 真实源验证、断流重连 | 待验证 | 需要同一测试源对比 TCP / UDP |
-| HTTP MP4 | FFmpeg 可能支持 | 播放、seek、错误诊断 | 待验证 | 建议使用本机 HTTP server 或稳定公网源 |
+| RTSP TCP | 已支持入口 | 真实源验证、断流重连 | 已执行，Android 侧未通过 | mediamtx + 宿主机 FFmpeg 拉流通过，Android FFmpeg 打开失败 |
+| RTSP UDP | 已支持入口 | 真实源验证、断流重连 | 已执行，Android 侧未通过 | mediamtx 源可用，Android 真机 UDP 拉流超时 |
+| HTTP MP4 | 已支持 | 播放、seek、错误诊断 | 播放已通过，seek 待复测 | faststart MP4 已播放通过，普通 MP4 建议 HTTP server 支持 Range |
 | HTTPS MP4 | FFmpeg 可能支持 | 播放、seek、错误诊断 | 待验证 | 需要记录证书和 FFmpeg TLS 兼容性 |
-| HLS VOD | FFmpeg 可能支持 | m3u8 基础播放 | 待验证 | v1.5 不承诺加密、多码率切换和字幕 |
+| HLS VOD | 已支持 | m3u8 基础播放 | 已通过 | v1.5 不承诺加密、多码率切换和字幕 |
 | HLS Live | FFmpeg 可能支持 | 播放或明确错误 | 待验证 | 直播流 seek 预期可能不支持 |
 
 v1.5 文档：
