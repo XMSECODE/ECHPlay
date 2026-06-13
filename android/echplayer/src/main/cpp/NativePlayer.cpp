@@ -8,6 +8,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <cctype>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -42,6 +43,35 @@ static constexpr int PLAYER_INFO_DECODE_MODE_CHANGED = 2013;
 static constexpr int PLAYER_INFO_MEDIACODEC_OPENED = 2014;
 static constexpr int PLAYER_INFO_MEDIACODEC_FALLBACK = 2015;
 static constexpr int PLAYER_INFO_MEDIACODEC_UNSUPPORTED = 2016;
+
+/** 判断字符串是否以指定前缀开头，比较时忽略大小写。 */
+static bool startsWithIgnoreCase(const std::string &value, const char *prefix) {
+    size_t prefixLength = std::strlen(prefix);
+    if (value.size() < prefixLength) {
+        return false;
+    }
+
+    for (size_t i = 0; i < prefixLength; ++i) {
+        unsigned char left = static_cast<unsigned char>(value[i]);
+        unsigned char right = static_cast<unsigned char>(prefix[i]);
+        if (std::tolower(left) != std::tolower(right)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/** 判断当前数据源是否是 RTSP 地址。 */
+static bool isRtspSource(const std::string &source) {
+    return startsWithIgnoreCase(source, "rtsp://");
+}
+
+/** 判断当前数据源是否是网络地址。 */
+static bool isNetworkSource(const std::string &source) {
+    return isRtspSource(source)
+           || startsWithIgnoreCase(source, "http://")
+           || startsWithIgnoreCase(source, "https://");
+}
 
 /** 创建 Native 播放器实例并缓存 Java 回调。 */
 NativePlayer::NativePlayer(JavaVM *vm, JNIEnv *env, jobject javaPlayer)
@@ -264,17 +294,21 @@ std::string NativePlayer::prepare() {
 
     avformat_network_init();
 
+    bool rtspSource = isRtspSource(dataSource);
+    bool networkSource = isNetworkSource(dataSource);
     AVDictionary *options = nullptr;
-    if (dataSource.rfind("rtsp://", 0) == 0) {
+    if (networkSource) {
+        av_dict_set(&options, "timeout", std::to_string(openTimeoutUs).c_str(), 0);
+        av_dict_set(&options, "rw_timeout", std::to_string(readWriteTimeoutUs).c_str(), 0);
+        av_dict_set(&options, "buffer_size", std::to_string(inputBufferSize).c_str(), 0);
+    }
+    if (rtspSource) {
         av_dict_set(
                 &options,
                 "rtsp_transport",
                 rtspTransport == 1 ? "udp" : "tcp",
                 0
         );
-        av_dict_set(&options, "timeout", std::to_string(openTimeoutUs).c_str(), 0);
-        av_dict_set(&options, "rw_timeout", std::to_string(readWriteTimeoutUs).c_str(), 0);
-        av_dict_set(&options, "buffer_size", std::to_string(inputBufferSize).c_str(), 0);
         av_dict_set(&options, "max_delay", std::to_string(maxDelayUs).c_str(), 0);
     }
 
@@ -327,7 +361,7 @@ std::string NativePlayer::prepare() {
         return "prepare failed: no video stream found";
     }
 
-    seekable = dataSource.rfind("rtsp://", 0) != 0
+    seekable = !rtspSource
                && formatContext->duration != AV_NOPTS_VALUE
                && formatContext->duration > 0;
     prepared = true;

@@ -303,14 +303,14 @@ playerView.release();
 
 主页面 `MainActivity` 保留两种入口：
 
-1. RTSP 流：输入 `rtsp://...`，选择 `RTSP TCP` 或 `RTSP UDP`，点击“播放”。
+1. 网络 URL：输入 `rtsp://...`、`http://...`、`https://...` 或 `.m3u8`，RTSP 可选择 `RTSP TCP` 或 `RTSP UDP`，点击“播放”。
 2. 本地文件：切到“本地文件”，输入路径或通过“选择文件”选择视频。
 3. PlayerView Demo：点击 `PlayerView` 按钮打开 `PlayerViewDemoActivity`。
 4. 渲染模式：主页面和 PlayerView Demo 均可切换 `AUTO`、`OpenGL`、`NativeWindow`。
 5. 解码模式：主页面和 PlayerView Demo 均可切换 `解码AUTO`、`软解`、`硬解`。
 6. 画面比例：PlayerView Demo 可切换 `fit`、`crop`、`fill`、`original`。
 
-主页面会展示播放器状态、错误码、info 回调、缓冲事件、视频尺寸、渲染模式、目标解码模式、当前实际解码方式、解码器名称、硬解回退原因、截图路径、录制状态和录制文件路径。
+主页面会展示播放器状态、协议类型、错误码、info 回调、缓冲事件、视频尺寸、渲染模式、目标解码模式、当前实际解码方式、解码器名称、硬解回退原因、截图路径、录制状态和录制文件路径。
 
 ## ABI 状态
 

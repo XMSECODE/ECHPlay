@@ -29,7 +29,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:checked="true"
-                android:text="RTSP \u6d41" />
+                android:text="\u7f51\u7edc URL" />
 
             <RadioButton
                 android:id="@+id/modeLocalButton"
@@ -57,7 +57,7 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:hint="\u8f93\u5165\u672c\u5730\u8def\u5f84\u6216 rtsp:// \u5730\u5740"
+                    android:hint="\u8f93\u5165 rtsp://\u3001http://\u3001https:// \u6216 .m3u8 \u5730\u5740"
                     android:imeOptions="actionDone"
                     android:inputType="textUri"
                     android:maxLines="1"

@@ -44,14 +44,14 @@ public class MainActivity extends AppCompatActivity {
     private static final String KEY_LAST_DATA_SOURCE = "last_data_source";
     /** RTSP 传输方式缓存 key。 */
     private static final String KEY_RTSP_TRANSPORT = "rtsp_transport";
-    /** 默认 RTSP 地址。 */
-    private static final String DEFAULT_RTSP_SOURCE = "rtsp://192.168.1.1:554/live";
+    /** 默认网络播放地址。 */
+    private static final String DEFAULT_NETWORK_SOURCE = "rtsp://192.168.1.1:554/live";
     /** 截图目录名。 */
     private static final String SCREENSHOT_DIR = "screenshots";
     /** 录制目录名。 */
     private static final String RECORD_DIR = "records";
-    /** 模式：RTSP 流。 */
-    private static final int MODE_RTSP = 0;
+    /** 模式：网络 URL。 */
+    private static final int MODE_NETWORK = 0;
     /** 模式：本地文件。 */
     private static final int MODE_LOCAL = 1;
     /** 文件选择请求码。 */
@@ -69,7 +69,7 @@ public class MainActivity extends AppCompatActivity {
     private Button openButton;
     /** PlayerView Demo 入口按钮。 */
     private Button openPlayerViewDemoButton;
-    /** RTSP 传输组选框。 */
+    /** RTSP 传输组选框，仅 RTSP 协议生效。 */
     private RadioGroup transportGroup;
     /** TCP 选项按钮。 */
     private RadioButton transportTcpButton;
@@ -93,11 +93,11 @@ public class MainActivity extends AppCompatActivity {
     private RadioButton decodeModeMediaCodecButton;
     /** 播放模式组选框。 */
     private RadioGroup modeGroup;
-    /** RTSP 模式按钮。 */
+    /** 网络 URL 模式按钮。 */
     private RadioButton modeRtspButton;
     /** 本地文件模式按钮。 */
     private RadioButton modeLocalButton;
-    /** RTSP 输入区域布局。 */
+    /** 网络 URL 输入区域布局。 */
     private LinearLayout rtspInputLayout;
     /** 本地文件输入区域布局。 */
     private LinearLayout localInputLayout;
@@ -390,18 +390,21 @@ public class MainActivity extends AppCompatActivity {
         text.append("\n\n");
         sampleText.setText(text.toString());
 
-        int playMode = modeGroup.getCheckedRadioButtonId() == R.id.modeLocalButton ? MODE_LOCAL : MODE_RTSP;
+        int playMode = modeGroup.getCheckedRadioButtonId() == R.id.modeLocalButton
+                ? MODE_LOCAL
+                : MODE_NETWORK;
         try {
             String dataSource = resolveDataSource();
+            String protocolText = resolveProtocolText(dataSource);
+            appendLog("protocol: " + protocolText + "\nsource: " + dataSource);
 
             player.setSurface(surface);
             player.setRenderMode(resolveRenderMode());
             player.setDecodeMode(resolveDecodeMode());
             player.setDataSource(dataSource);
 
-            if (playMode == MODE_RTSP) {
-                player.setRtspTransport(resolveRtspTransport());
-                applyRtspNetworkOptions(player);
+            if (playMode == MODE_NETWORK) {
+                applyNetworkOptions(player, dataSource);
             }
 
             String prepareInfo = player.prepare();
@@ -435,7 +438,7 @@ public class MainActivity extends AppCompatActivity {
             if (playMode == MODE_LOCAL) {
                 errorText.append("请通过选择文件按钮选取本地视频文件。\n\n");
             } else {
-                errorText.append("可以输入 rtsp:// 地址\n\n");
+                errorText.append("可以输入 rtsp://、http://、https:// 或 .m3u8 地址\n\n");
             }
             errorText.append("error: ");
             errorText.append(e.getMessage());
@@ -488,12 +491,46 @@ public class MainActivity extends AppCompatActivity {
                 )));
     }
 
-    /** 应用 RTSP 网络播放参数。 */
-    private void applyRtspNetworkOptions(ECHPlayer targetPlayer) {
+    /** 应用网络播放参数，RTSP 会额外设置 TCP 或 UDP 传输方式。 */
+    private void applyNetworkOptions(ECHPlayer targetPlayer, String dataSource) {
         targetPlayer.setOption(ECHPlayer.OPTION_CATEGORY_FORMAT, ECHPlayer.OPTION_TIMEOUT, 5_000_000L);
         targetPlayer.setOption(ECHPlayer.OPTION_CATEGORY_FORMAT, ECHPlayer.OPTION_RW_TIMEOUT, 5_000_000L);
         targetPlayer.setOption(ECHPlayer.OPTION_CATEGORY_FORMAT, ECHPlayer.OPTION_BUFFER_SIZE, 1_024_000L);
-        targetPlayer.setOption(ECHPlayer.OPTION_CATEGORY_FORMAT, ECHPlayer.OPTION_MAX_DELAY, 500_000L);
+        if (isRtspSource(dataSource)) {
+            targetPlayer.setRtspTransport(resolveRtspTransport());
+            targetPlayer.setOption(ECHPlayer.OPTION_CATEGORY_FORMAT, ECHPlayer.OPTION_MAX_DELAY, 500_000L);
+        }
+    }
+
+    /** 判断数据源是否是 RTSP 地址。 */
+    private boolean isRtspSource(String dataSource) {
+        return dataSource != null && dataSource.toLowerCase(Locale.US).startsWith("rtsp://");
+    }
+
+    /** 判断数据源是否是 HLS m3u8 地址。 */
+    private boolean isHlsSource(String dataSource) {
+        return dataSource != null && dataSource.toLowerCase(Locale.US).contains(".m3u8");
+    }
+
+    /** 解析数据源协议类型，供 Demo 日志和验证记录使用。 */
+    private String resolveProtocolText(String dataSource) {
+        if (isHlsSource(dataSource)) {
+            return "HLS";
+        }
+        if (dataSource == null) {
+            return "UNKNOWN";
+        }
+        String lowerSource = dataSource.toLowerCase(Locale.US);
+        if (lowerSource.startsWith("rtsp://")) {
+            return "RTSP";
+        }
+        if (lowerSource.startsWith("https://")) {
+            return "HTTPS MP4";
+        }
+        if (lowerSource.startsWith("http://")) {
+            return "HTTP MP4";
+        }
+        return "LOCAL";
     }
 
     /** 根据单选框解析当前渲染模式。 */
@@ -621,7 +658,9 @@ public class MainActivity extends AppCompatActivity {
 
     /** 解析当前应该使用的数据源。 */
     private String resolveDataSource() throws IOException {
-        int mode = modeGroup.getCheckedRadioButtonId() == R.id.modeLocalButton ? MODE_LOCAL : MODE_RTSP;
+        int mode = modeGroup.getCheckedRadioButtonId() == R.id.modeLocalButton
+                ? MODE_LOCAL
+                : MODE_NETWORK;
         if (mode == MODE_LOCAL) {
             String path = localPathInput.getText().toString().trim();
             if (!path.isEmpty()) {
@@ -633,22 +672,22 @@ public class MainActivity extends AppCompatActivity {
             if (!input.isEmpty()) {
                 return input;
             }
-            throw new IOException("RTSP 地址为空，请输入 rtsp:// 地址");
+            throw new IOException("网络 URL 为空，请输入 rtsp://、http://、https:// 或 .m3u8 地址");
         }
     }
 
     /** 恢复上次选择的播放模式及对应输入内容。 */
     private void restorePlayMode() {
         SharedPreferences preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        int mode = preferences.getInt(KEY_PLAY_MODE, MODE_RTSP);
+        int mode = preferences.getInt(KEY_PLAY_MODE, MODE_NETWORK);
         if (mode == MODE_LOCAL) {
             modeLocalButton.setChecked(true);
         } else {
             modeRtspButton.setChecked(true);
         }
 
-        String lastRtsp = preferences.getString(KEY_LAST_DATA_SOURCE, DEFAULT_RTSP_SOURCE);
-        dataSourceInput.setText(lastRtsp);
+        String lastNetworkUrl = preferences.getString(KEY_LAST_DATA_SOURCE, DEFAULT_NETWORK_SOURCE);
+        dataSourceInput.setText(lastNetworkUrl);
         dataSourceInput.setSelection(dataSourceInput.getText().length());
 
         int transport = preferences.getInt(KEY_RTSP_TRANSPORT, ECHPlayer.RTSP_TRANSPORT_TCP);
@@ -666,12 +705,14 @@ public class MainActivity extends AppCompatActivity {
     /** 持久化当前播放模式及对应输入内容。 */
     private void persistPlayMode() {
         SharedPreferences preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        int mode = modeGroup.getCheckedRadioButtonId() == R.id.modeLocalButton ? MODE_LOCAL : MODE_RTSP;
+        int mode = modeGroup.getCheckedRadioButtonId() == R.id.modeLocalButton
+                ? MODE_LOCAL
+                : MODE_NETWORK;
         preferences.edit().putInt(KEY_PLAY_MODE, mode).apply();
 
-        String rtspInput = dataSourceInput.getText().toString().trim();
-        if (!rtspInput.isEmpty()) {
-            preferences.edit().putString(KEY_LAST_DATA_SOURCE, rtspInput).apply();
+        String networkInput = dataSourceInput.getText().toString().trim();
+        if (!networkInput.isEmpty()) {
+            preferences.edit().putString(KEY_LAST_DATA_SOURCE, networkInput).apply();
         }
         String localPath = localPathInput.getText().toString().trim();
         preferences.edit().putString(KEY_LOCAL_FILE_PATH, localPath).apply();
@@ -680,9 +721,9 @@ public class MainActivity extends AppCompatActivity {
 
     /** 根据当前播放模式切换输入区域的显示/隐藏。 */
     private void updateModeUi() {
-        boolean isRtsp = modeGroup.getCheckedRadioButtonId() == R.id.modeRtspButton;
-        rtspInputLayout.setVisibility(isRtsp ? View.VISIBLE : View.GONE);
-        localInputLayout.setVisibility(isRtsp ? View.GONE : View.VISIBLE);
+        boolean isNetworkMode = modeGroup.getCheckedRadioButtonId() == R.id.modeRtspButton;
+        rtspInputLayout.setVisibility(isNetworkMode ? View.VISIBLE : View.GONE);
+        localInputLayout.setVisibility(isNetworkMode ? View.GONE : View.VISIBLE);
     }
 
     /** 打开系统文件选择器。 */

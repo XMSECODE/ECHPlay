@@ -15,7 +15,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:hint="输入本地路径或 rtsp:// 地址"
+            android:hint="输入本地路径、rtsp://、http://、https:// 或 .m3u8 地址"
             android:imeOptions="actionDone"
             android:inputType="textUri"
             android:maxLines="1"
