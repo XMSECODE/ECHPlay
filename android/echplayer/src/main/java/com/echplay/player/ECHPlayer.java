@@ -10,6 +10,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.Locale;
 
 /**
  * Java 层播放器封装，负责桥接 UI 与 NativePlayer。
@@ -135,6 +136,12 @@ public class ECHPlayer implements AutoCloseable {
     public static final int INFO_MEDIACODEC_FALLBACK = 2015;
     /** 当前流或设备不支持 MediaCodec 硬解。 */
     public static final int INFO_MEDIACODEC_UNSUPPORTED = 2016;
+    /** 正在自动重连。 */
+    public static final int INFO_RECONNECTING = 2017;
+    /** 自动重连成功。 */
+    public static final int INFO_RECONNECTED = 2018;
+    /** 自动重连失败。 */
+    public static final int INFO_RECONNECT_FAILED = 2019;
 
     /** prepare 完成监听器。 */
     public interface OnPreparedListener {
@@ -228,6 +235,12 @@ public class ECHPlayer implements AutoCloseable {
     public static final String OPTION_BUFFER_SIZE = "buffer_size";
     /** RTSP 最大延迟 option 名称，单位微秒。 */
     public static final String OPTION_MAX_DELAY = "max_delay";
+    /** 自动重连开关 option 名称，1 开启，0 关闭。 */
+    public static final String OPTION_RECONNECT = "reconnect";
+    /** 最大重连次数 option 名称。 */
+    public static final String OPTION_RECONNECT_MAX_COUNT = "reconnect_max_count";
+    /** 重连间隔 option 名称，单位毫秒。 */
+    public static final String OPTION_RECONNECT_INTERVAL_MS = "reconnect_interval_ms";
 
     static {
         System.loadLibrary("echplayer");
@@ -289,6 +302,20 @@ public class ECHPlayer implements AutoCloseable {
     private RecordingState recordingState = RecordingState.IDLE;
     /** 最近一次录制文件路径。 */
     private String lastRecordingPath = "";
+    /** 最近一次设置的数据源。 */
+    private String currentDataSource = "";
+    /** 是否开启自动重连。 */
+    private boolean reconnectEnabled = false;
+    /** 自动重连最大次数。 */
+    private int reconnectMaxCount = 3;
+    /** 自动重连间隔，单位毫秒。 */
+    private long reconnectIntervalMs = 2000L;
+    /** 当前播放生命周期内已经重连的次数。 */
+    private int reconnectCount = 0;
+    /** 当前是否正在重连。 */
+    private boolean reconnecting = false;
+    /** 重连代次，用于 stop / release 后让旧线程失效。 */
+    private int reconnectGeneration = 0;
 
     /** Java 音频输出实例。 */
     private AudioTrack audioTrack;
@@ -338,10 +365,13 @@ public class ECHPlayer implements AutoCloseable {
         }
 
         nativeSetDataSource(nativeHandle, dataSource);
+        currentDataSource = dataSource;
         state = State.INITIALIZED;
         prepared = false;
         playing = false;
         paused = false;
+        reconnectCount = 0;
+        reconnecting = false;
         resetVideoSize();
         resetPlaybackEventFlags();
     }
@@ -412,6 +442,27 @@ public class ECHPlayer implements AutoCloseable {
         nativeSetRtspTransport(nativeHandle, rtspTransport);
     }
 
+    /** 设置是否开启自动重连。 */
+    public synchronized void setReconnectEnabled(boolean enabled) {
+        checkReleased();
+        reconnectEnabled = enabled;
+        if (!enabled) {
+            cancelReconnectLocked();
+        }
+    }
+
+    /** 设置自动重连最大次数和重连间隔。 */
+    public synchronized void setReconnectConfig(int maxRetryCount, long retryIntervalMs) {
+        checkReleased();
+        reconnectMaxCount = Math.max(0, maxRetryCount);
+        reconnectIntervalMs = Math.max(0L, retryIntervalMs);
+    }
+
+    /** 返回当前播放生命周期内已经尝试的重连次数。 */
+    public synchronized int getReconnectCount() {
+        return reconnectCount;
+    }
+
     /** 设置 long 类型播放器选项。 */
     public synchronized boolean setOption(int category, String name, long value) {
         checkReleased();
@@ -430,6 +481,18 @@ public class ECHPlayer implements AutoCloseable {
         }
         if (OPTION_MEDIACODEC.equals(name)) {
             setDecodeMode(value == 0 ? DECODE_MODE_SOFTWARE : DECODE_MODE_MEDIACODEC);
+            return true;
+        }
+        if (OPTION_RECONNECT.equals(name)) {
+            setReconnectEnabled(value != 0);
+            return true;
+        }
+        if (OPTION_RECONNECT_MAX_COUNT.equals(name)) {
+            setReconnectConfig((int) value, reconnectIntervalMs);
+            return true;
+        }
+        if (OPTION_RECONNECT_INTERVAL_MS.equals(name)) {
+            setReconnectConfig(reconnectMaxCount, value);
             return true;
         }
 
@@ -470,6 +533,11 @@ public class ECHPlayer implements AutoCloseable {
             setDecodeMode(enable ? DECODE_MODE_MEDIACODEC : DECODE_MODE_SOFTWARE);
             return true;
         }
+        if (OPTION_RECONNECT.equals(name)) {
+            boolean enable = "1".equals(value) || "true".equalsIgnoreCase(value);
+            setReconnectEnabled(enable);
+            return true;
+        }
 
         try {
             return setOption(category, name, Long.parseLong(value));
@@ -500,7 +568,10 @@ public class ECHPlayer implements AutoCloseable {
                 onPreparedListener.onPrepared(this);
             }
         } else {
-            dispatchError(mapPrepareErrorCode(lastPrepareResult), lastPrepareResult);
+            int errorCode = mapPrepareErrorCode(lastPrepareResult);
+            if (!startReconnectIfNeededLocked(errorCode, lastPrepareResult)) {
+                dispatchError(errorCode, lastPrepareResult);
+            }
         }
         return lastPrepareResult;
     }
@@ -530,7 +601,10 @@ public class ECHPlayer implements AutoCloseable {
                             onPreparedListener.onPrepared(this);
                         }
                     } else {
-                        dispatchError(mapPrepareErrorCode(lastPrepareResult), lastPrepareResult);
+                        int errorCode = mapPrepareErrorCode(lastPrepareResult);
+                        if (!startReconnectIfNeededLocked(errorCode, lastPrepareResult)) {
+                            dispatchError(errorCode, lastPrepareResult);
+                        }
                     }
                 }
             }
@@ -610,6 +684,7 @@ public class ECHPlayer implements AutoCloseable {
             if (state == State.IDLE || state == State.RELEASED) {
                 return;
             }
+            cancelReconnectLocked();
             stopRecordingIfNeeded();
             nativeStop(nativeHandle);
             releaseAudioTrack();
@@ -625,6 +700,7 @@ public class ECHPlayer implements AutoCloseable {
     public synchronized void reset() {
         checkReleased();
 
+        cancelReconnectLocked();
         stopRecordingIfNeeded();
         nativeStop(nativeHandle);
         releaseAudioTrack();
@@ -646,6 +722,9 @@ public class ECHPlayer implements AutoCloseable {
         lastDecodeFallbackReason = "";
         recordingState = RecordingState.IDLE;
         lastRecordingPath = "";
+        currentDataSource = "";
+        reconnectCount = 0;
+        reconnecting = false;
         resetVideoSize();
         resetPlaybackEventFlags();
         state = State.IDLE;
@@ -898,6 +977,7 @@ public class ECHPlayer implements AutoCloseable {
     /** 释放播放器实例。 */
     public synchronized void release() {
         if (!released) {
+            cancelReconnectLocked();
             stopRecordingIfNeeded();
             nativeRelease(nativeHandle);
             nativeHandle = 0;
@@ -975,6 +1055,9 @@ public class ECHPlayer implements AutoCloseable {
 
     /** Native 回调：播放器错误事件。 */
     private synchronized void onNativeError(int errorCode, String message) {
+        if (startReconnectIfNeededLocked(errorCode, message)) {
+            return;
+        }
         if (state != State.RELEASED) {
             state = State.ERROR;
             playing = false;
@@ -1065,6 +1148,193 @@ public class ECHPlayer implements AutoCloseable {
         if (onBufferingUpdateListener != null) {
             onBufferingUpdateListener.onBufferingUpdate(this, percent);
         }
+    }
+
+    /** 取消当前正在等待或执行的重连任务。 */
+    private void cancelReconnectLocked() {
+        reconnecting = false;
+        reconnectGeneration++;
+    }
+
+    /** 判断当前错误是否应该触发自动重连。 */
+    private boolean startReconnectIfNeededLocked(int errorCode, String message) {
+        if (!shouldReconnectLocked(errorCode)) {
+            return false;
+        }
+        if (reconnecting) {
+            return true;
+        }
+
+        reconnecting = true;
+        prepared = false;
+        playing = false;
+        paused = false;
+        state = State.PREPARING;
+        int generation = ++reconnectGeneration;
+        String dataSource = currentDataSource;
+        String reason = message == null ? "" : message;
+
+        Thread reconnectThread = new Thread(
+                () -> runReconnectLoop(generation, dataSource, errorCode, reason),
+                "ECHPlayer-Reconnect"
+        );
+        reconnectThread.start();
+        return true;
+    }
+
+    /** 判断当前状态和错误码是否允许自动重连。 */
+    private boolean shouldReconnectLocked(int errorCode) {
+        if (!reconnectEnabled || released || nativeHandle == 0 || reconnectMaxCount <= 0) {
+            return false;
+        }
+        if (!isRtspDataSourceLocked()) {
+            return false;
+        }
+        if (state == State.STOPPED || state == State.RELEASED || state == State.IDLE) {
+            return false;
+        }
+        return errorCode == ERROR_NETWORK_TIMEOUT
+                || errorCode == ERROR_OPEN_INPUT_FAILED
+                || errorCode == ERROR_STREAM_INFO_FAILED
+                || errorCode == ERROR_UNKNOWN;
+    }
+
+    /** 判断当前数据源是否是 RTSP 地址。 */
+    private boolean isRtspDataSourceLocked() {
+        String lowerSource = currentDataSource == null
+                ? ""
+                : currentDataSource.toLowerCase(Locale.US);
+        return lowerSource.startsWith("rtsp://");
+    }
+
+    /** 执行自动重连循环，直到成功、取消或达到最大次数。 */
+    private void runReconnectLoop(
+            int generation,
+            String dataSource,
+            int originalErrorCode,
+            String originalReason) {
+
+        while (true) {
+            int attempt;
+            long delayMs;
+            synchronized (this) {
+                if (!isReconnectActiveLocked(generation)) {
+                    return;
+                }
+                if (reconnectCount >= reconnectMaxCount) {
+                    finishReconnectFailedLocked(originalErrorCode, originalReason);
+                    return;
+                }
+                reconnectCount++;
+                attempt = reconnectCount;
+                delayMs = reconnectIntervalMs;
+                dispatchInfo(
+                        INFO_RECONNECTING,
+                        "reconnecting"
+                                + "\nattempt: " + attempt + "/" + reconnectMaxCount
+                                + "\nreason: " + originalReason
+                );
+            }
+
+            if (delayMs > 0) {
+                try {
+                    Thread.sleep(delayMs);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    synchronized (this) {
+                        finishReconnectFailedLocked(originalErrorCode, "reconnect interrupted");
+                    }
+                    return;
+                }
+            }
+
+            synchronized (this) {
+                if (!isReconnectActiveLocked(generation)) {
+                    return;
+                }
+
+                nativeStop(nativeHandle);
+                releaseAudioTrack();
+                resetPlaybackEventFlags();
+                prepared = false;
+                playing = false;
+                paused = false;
+                state = State.PREPARING;
+
+                nativeSetDataSource(nativeHandle, dataSource);
+                nativeSetRtspTransport(nativeHandle, rtspTransport);
+                nativeSetRenderMode(nativeHandle, renderMode);
+                nativeSetDecodeMode(nativeHandle, decodeMode);
+
+                lastPrepareResult = nativePrepare(nativeHandle);
+                updateDecodeInfoFromNative();
+                prepared = lastPrepareResult != null
+                        && lastPrepareResult.startsWith("prepare success");
+                if (!prepared) {
+                    dispatchInfo(
+                            INFO_RECONNECTING,
+                            "reconnect attempt failed"
+                                    + "\nattempt: " + attempt + "/" + reconnectMaxCount
+                                    + "\nresult: " + lastPrepareResult
+                    );
+                    continue;
+                }
+
+                updateVideoSizeFromNative();
+                dispatchInfo(INFO_PREPARED, lastPrepareResult);
+                dispatchBufferingUpdate(100);
+
+                lastStartResult = nativePlay(nativeHandle);
+                if (lastStartResult != null
+                        && (lastStartResult.startsWith("play started")
+                        || lastStartResult.startsWith("play ignored"))) {
+                    playing = true;
+                    paused = false;
+                    state = State.STARTED;
+                    reconnecting = false;
+                    completionDispatched = false;
+                    dispatchInfo(
+                            INFO_RECONNECTED,
+                            "reconnected"
+                                    + "\nattempt: " + attempt + "/" + reconnectMaxCount
+                                    + "\nsource: " + dataSource
+                    );
+                    dispatchInfo(INFO_PLAY_STARTED, lastStartResult);
+                    return;
+                }
+
+                dispatchInfo(
+                        INFO_RECONNECTING,
+                        "reconnect start failed"
+                                + "\nattempt: " + attempt + "/" + reconnectMaxCount
+                                + "\nresult: " + lastStartResult
+                );
+            }
+        }
+    }
+
+    /** 判断指定重连代次是否仍然有效。 */
+    private boolean isReconnectActiveLocked(int generation) {
+        return reconnecting
+                && !released
+                && nativeHandle != 0
+                && reconnectGeneration == generation;
+    }
+
+    /** 结束自动重连并分发最终错误。 */
+    private void finishReconnectFailedLocked(int errorCode, String reason) {
+        reconnecting = false;
+        prepared = false;
+        playing = false;
+        paused = false;
+        state = State.ERROR;
+        dispatchInfo(
+                INFO_RECONNECT_FAILED,
+                "reconnect failed"
+                        + "\nattempts: " + reconnectCount + "/" + reconnectMaxCount
+                        + "\nreason: " + reason
+        );
+        dispatchError(errorCode, reason);
     }
 
     /** 分发视频尺寸变化回调。 */

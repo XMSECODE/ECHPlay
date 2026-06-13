@@ -534,6 +534,8 @@ public class MainActivity extends AppCompatActivity {
         if (isRtspSource(dataSource)) {
             targetPlayer.setRtspTransport(resolveRtspTransport());
             targetPlayer.setOption(ECHPlayer.OPTION_CATEGORY_FORMAT, ECHPlayer.OPTION_MAX_DELAY, 500_000L);
+            targetPlayer.setReconnectEnabled(true);
+            targetPlayer.setReconnectConfig(3, 2_000L);
         }
     }
 
@@ -686,6 +688,12 @@ public class MainActivity extends AppCompatActivity {
                 return "MediaCodec 回退软解";
             case ECHPlayer.INFO_MEDIACODEC_UNSUPPORTED:
                 return "MediaCodec 不支持";
+            case ECHPlayer.INFO_RECONNECTING:
+                return "正在自动重连";
+            case ECHPlayer.INFO_RECONNECTED:
+                return "自动重连成功";
+            case ECHPlayer.INFO_RECONNECT_FAILED:
+                return "自动重连失败";
             default:
                 return "普通播放信息";
         }

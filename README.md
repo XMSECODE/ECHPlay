@@ -139,6 +139,8 @@ player.setRenderMode(ECHPlayer.RENDER_MODE_AUTO);
 player.setDecodeMode(ECHPlayer.DECODE_MODE_AUTO);
 player.setDataSource("rtsp://192.168.1.1:554/live");
 player.setRtspTransport(ECHPlayer.RTSP_TRANSPORT_TCP);
+player.setReconnectEnabled(true);
+player.setReconnectConfig(3, 2_000L);
 player.setOption(ECHPlayer.OPTION_CATEGORY_FORMAT, ECHPlayer.OPTION_TIMEOUT, 5_000_000L);
 player.setOption(ECHPlayer.OPTION_CATEGORY_FORMAT, ECHPlayer.OPTION_RW_TIMEOUT, 5_000_000L);
 player.prepare();
@@ -154,7 +156,7 @@ player.setOnErrorListener((targetPlayer, errorCode, message) -> {
 });
 
 player.setOnInfoListener((targetPlayer, infoCode, message) -> {
-    // infoCode 可监听 prepare、播放开始、缓冲、seek、录制等事件。
+    // infoCode 可监听 prepare、播放开始、缓冲、seek、录制、自动重连等事件。
     return true;
 });
 ```
@@ -225,6 +227,9 @@ String fallbackReason = player.getLastDecodeFallbackReason();   // 硬解失败�
 2. `INFO_MEDIACODEC_OPENED`：MediaCodec 创建并启动成功。
 3. `INFO_MEDIACODEC_FALLBACK`：硬解失败，已回退软解。
 4. `INFO_MEDIACODEC_UNSUPPORTED`：当前编码或设备不支持硬解。
+5. `INFO_RECONNECTING`：RTSP 正在按配置自动重连。
+6. `INFO_RECONNECTED`：RTSP 自动重连成功并恢复播放。
+7. `INFO_RECONNECT_FAILED`：RTSP 自动重连达到上限后失败。
 
 截图示例：
 
