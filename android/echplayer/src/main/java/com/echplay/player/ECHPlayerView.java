@@ -14,6 +14,7 @@ import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.SeekBar;
 import android.widget.TextView;
 
 import java.io.File;
@@ -40,6 +41,10 @@ public class ECHPlayerView extends LinearLayout {
     private static final String SCREENSHOT_DIR = "screenshots";
     /** 录制输出子目录名。 */
     private static final String RECORD_DIR = "records";
+    /** 进度刷新间隔，单位毫秒。 */
+    private static final long PROGRESS_UPDATE_INTERVAL_MS = 500L;
+    /** 控制条自动隐藏延迟，单位毫秒。 */
+    private static final long CONTROLS_AUTO_HIDE_DELAY_MS = 3000L;
 
     /**
      * PlayerView 内部状态，用于控制覆盖层显示。
@@ -83,6 +88,14 @@ public class ECHPlayerView extends LinearLayout {
     private final Button captureButton;
     /** 录制按钮。 */
     private final Button recordButton;
+    /** 控制区域容器，包含进度条和按钮。 */
+    private final LinearLayout controlsContainer;
+    /** 播放进度条。 */
+    private final SeekBar progressSeekBar;
+    /** 当前播放时间文本。 */
+    private final TextView currentTimeText;
+    /** 媒体总时长文本。 */
+    private final TextView durationTimeText;
     /** 内部播放器实例。 */
     private ECHPlayer player;
     /** 当前播放地址。 */
@@ -107,8 +120,28 @@ public class ECHPlayerView extends LinearLayout {
     private int videoWidth = 0;
     /** 当前视频高度。 */
     private int videoHeight = 0;
+    /** 当前媒体总时长，单位毫秒。 */
+    private long durationMs = 0L;
+    /** 当前媒体是否支持 seek。 */
+    private boolean seekable = false;
+    /** 用户是否正在拖动进度条。 */
+    private boolean userSeeking = false;
+    /** 控制区域当前是否显示。 */
+    private boolean controlsVisible = true;
     /** 主线程 Handler，用于把播放器回调安全切回 UI 线程。 */
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
+    /** 定时刷新进度的任务。 */
+    private final Runnable progressUpdater = new Runnable() {
+        @Override
+        public void run() {
+            updateProgressUi();
+            if (!released && player != null && !player.isReleased()) {
+                uiHandler.postDelayed(this, PROGRESS_UPDATE_INTERVAL_MS);
+            }
+        }
+    };
+    /** 播放中自动隐藏控制条的任务。 */
+    private final Runnable autoHideControlsRunnable = this::hideControlsIfAllowed;
 
     /** 组件事件监听器，用于 Demo 展示日志。 */
     public interface EventListener {
@@ -137,6 +170,7 @@ public class ECHPlayerView extends LinearLayout {
                 (view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) ->
                         updateSurfaceLayout()
         );
+        surfaceContainer.setOnClickListener(view -> showControlsTemporarily());
 
         surfaceView = new SurfaceView(context);
         surfaceContainer.addView(surfaceView, new FrameLayout.LayoutParams(
@@ -174,9 +208,44 @@ public class ECHPlayerView extends LinearLayout {
         retryParams.topMargin = dp(8);
         statusOverlay.addView(retryButton, retryParams);
 
+        controlsContainer = new LinearLayout(context);
+        controlsContainer.setOrientation(VERTICAL);
+        controlsContainer.setPadding(dp(8), dp(6), dp(8), dp(6));
+        addView(controlsContainer, new LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+
+        LinearLayout progressLayout = new LinearLayout(context);
+        progressLayout.setGravity(Gravity.CENTER_VERTICAL);
+        progressLayout.setOrientation(HORIZONTAL);
+        controlsContainer.addView(progressLayout, new LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+
+        currentTimeText = createTimeText("00:00");
+        durationTimeText = createTimeText("00:00");
+        progressSeekBar = new SeekBar(context);
+        progressSeekBar.setMax(1000);
+        progressSeekBar.setEnabled(false);
+        progressLayout.addView(currentTimeText, new LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+        progressLayout.addView(progressSeekBar, new LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                1f
+        ));
+        progressLayout.addView(durationTimeText, new LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+
         LinearLayout controlsLayout = new LinearLayout(context);
         controlsLayout.setOrientation(HORIZONTAL);
-        addView(controlsLayout, new LayoutParams(
+        controlsContainer.addView(controlsLayout, new LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
         ));
@@ -249,6 +318,7 @@ public class ECHPlayerView extends LinearLayout {
             stopRecordingIfNeeded();
             player.reset();
         }
+        resetProgressUi();
         resetVideoSize();
         applyRenderModeToPlayer();
         applyDecodeModeToPlayer();
@@ -296,11 +366,13 @@ public class ECHPlayerView extends LinearLayout {
                 updateViewState(ViewState.ERROR, "播放准备失败\n" + prepareResult, true);
                 return;
             }
+            refreshDurationAndSeekable();
             updateVideoSizeFromPlayer();
         }
         try {
             emitEvent(player.start());
             updateViewState(ViewState.PLAYING, "", false);
+            startProgressUpdates();
         } catch (IllegalStateException e) {
             emitEvent("PlayerView start ignored: " + e.getMessage());
             updateViewState(ViewState.ERROR, "播放启动失败\n" + e.getMessage(), true);
@@ -315,6 +387,7 @@ public class ECHPlayerView extends LinearLayout {
                 player.pause();
                 emitEvent("PlayerView pause");
                 updateViewState(ViewState.PAUSED, "已暂停", false);
+                showControls();
             } catch (IllegalStateException e) {
                 emitEvent("PlayerView pause ignored: " + e.getMessage());
             }
@@ -328,6 +401,8 @@ public class ECHPlayerView extends LinearLayout {
                 stopRecordingIfNeeded();
                 player.stop();
                 emitEvent("PlayerView stop");
+                stopProgressUpdates();
+                resetProgressUi();
                 updateViewState(ViewState.STOPPED, "已停止", false);
             } catch (IllegalStateException e) {
                 emitEvent("PlayerView stop ignored: " + e.getMessage());
@@ -340,9 +415,11 @@ public class ECHPlayerView extends LinearLayout {
     public void release() {
         if (player != null) {
             stopRecordingIfNeeded();
+            stopProgressUpdates();
             player.release();
             player = null;
             released = true;
+            resetProgressUi();
             updateViewState(ViewState.RELEASED, "", false);
             updateRecordButtonState();
         }
@@ -395,6 +472,7 @@ public class ECHPlayerView extends LinearLayout {
             public void surfaceDestroyed(SurfaceHolder holder) {
                 surfaceReady = false;
                 currentSurface = null;
+                stopProgressUpdates();
                 updateViewState(ViewState.IDLE, "Surface 已销毁", false);
                 if (player != null) {
                     try {
@@ -420,6 +498,25 @@ public class ECHPlayerView extends LinearLayout {
         captureButton.setOnClickListener(view -> capture());
         recordButton.setOnClickListener(view -> toggleRecording());
         retryButton.setOnClickListener(view -> retry());
+        progressSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (fromUser && durationMs > 0) {
+                    currentTimeText.setText(formatTime(progressToPositionMs(progress)));
+                }
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+                userSeeking = true;
+                showControls();
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+                seekToProgress(seekBar.getProgress());
+            }
+        });
     }
 
     /** 处理播放器 info 回调并刷新组件状态。 */
@@ -432,6 +529,7 @@ public class ECHPlayerView extends LinearLayout {
             updateViewState(ViewState.LOADING, "正在准备播放...", false);
         } else if (infoCode == ECHPlayer.INFO_PREPARED) {
             emitMediaAndTrackInfo(targetPlayer);
+            refreshDurationAndSeekable();
         } else if (infoCode == ECHPlayer.INFO_BUFFERING_START) {
             updateViewState(ViewState.BUFFERING, "正在缓冲...", false);
         } else if (infoCode == ECHPlayer.INFO_BUFFERING_END
@@ -473,7 +571,7 @@ public class ECHPlayerView extends LinearLayout {
         }
 
         String safeMessage = message == null ? "" : message;
-        updateViewState(ViewState.ERROR, "播放出错\n错误码: " + errorCode + "\n" + safeMessage, true);
+        updateViewState(ViewState.ERROR, buildUserErrorMessage(errorCode, safeMessage), true);
         emitEvent("PlayerView error " + errorCode + "\n" + safeMessage);
     }
 
@@ -502,6 +600,8 @@ public class ECHPlayerView extends LinearLayout {
         }
 
         emitEvent("PlayerView retry");
+        resetProgressUi();
+        updateViewState(ViewState.LOADING, "正在重试...", false);
         setVideoPath(videoPath);
         start();
     }
@@ -522,7 +622,10 @@ public class ECHPlayerView extends LinearLayout {
             return true;
         });
         player.setOnCompletionListener(targetPlayer ->
-                postToUi(() -> updateViewState(ViewState.STOPPED, "播放完成", false)));
+                postToUi(() -> {
+                    stopProgressUpdates();
+                    updateViewState(ViewState.STOPPED, "播放完成", false);
+                }));
         player.setOnBufferingUpdateListener((targetPlayer, percent) ->
                 postToUi(() -> handleBufferingPercent(percent)));
         player.setOnVideoSizeChangedListener((targetPlayer, width, height) -> {
@@ -784,6 +887,167 @@ public class ECHPlayerView extends LinearLayout {
         }
     }
 
+    /** 启动进度刷新。 */
+    private void startProgressUpdates() {
+        uiHandler.removeCallbacks(progressUpdater);
+        uiHandler.post(progressUpdater);
+        scheduleAutoHideControls();
+    }
+
+    /** 停止进度刷新和控制条自动隐藏任务。 */
+    private void stopProgressUpdates() {
+        uiHandler.removeCallbacks(progressUpdater);
+        uiHandler.removeCallbacks(autoHideControlsRunnable);
+    }
+
+    /** 刷新进度条和时间文本。 */
+    private void updateProgressUi() {
+        if (released || player == null || player.isReleased()) {
+            return;
+        }
+
+        refreshDurationAndSeekable();
+        long currentPositionMs = 0L;
+        try {
+            currentPositionMs = Math.max(0L, player.getCurrentPosition());
+        } catch (IllegalStateException e) {
+            emitEvent("PlayerView progress ignored: " + e.getMessage());
+            return;
+        }
+
+        if (!userSeeking) {
+            currentTimeText.setText(formatTime(currentPositionMs));
+            if (durationMs > 0L) {
+                progressSeekBar.setProgress(positionToProgress(currentPositionMs));
+            }
+        }
+        updateRecordButtonState();
+    }
+
+    /** 刷新总时长和 seek 能力。 */
+    private void refreshDurationAndSeekable() {
+        if (player == null || player.isReleased()) {
+            durationMs = 0L;
+            seekable = false;
+        } else {
+            durationMs = Math.max(0L, player.getDuration());
+            seekable = durationMs > 0L && player.isSeekable();
+        }
+
+        durationTimeText.setText(formatTime(durationMs));
+        progressSeekBar.setEnabled(seekable);
+        if (!seekable && !userSeeking) {
+            progressSeekBar.setProgress(0);
+        }
+    }
+
+    /** 重置进度 UI。 */
+    private void resetProgressUi() {
+        durationMs = 0L;
+        seekable = false;
+        userSeeking = false;
+        currentTimeText.setText(formatTime(0L));
+        durationTimeText.setText(formatTime(0L));
+        progressSeekBar.setProgress(0);
+        progressSeekBar.setEnabled(false);
+        showControls();
+    }
+
+    /** 按进度条位置执行 seek。 */
+    private void seekToProgress(int progress) {
+        if (player == null || player.isReleased()) {
+            userSeeking = false;
+            return;
+        }
+        if (!seekable || durationMs <= 0L) {
+            userSeeking = false;
+            emitEvent("PlayerView seek ignored: 当前媒体不支持 seek");
+            showControlsTemporarily();
+            return;
+        }
+
+        long targetPositionMs = progressToPositionMs(progress);
+        try {
+            emitEvent("PlayerView seek: " + formatTime(targetPositionMs)
+                    + "\n" + player.seekTo(targetPositionMs));
+            currentTimeText.setText(formatTime(targetPositionMs));
+        } catch (IllegalStateException e) {
+            emitEvent("PlayerView seek ignored: " + e.getMessage());
+        } finally {
+            userSeeking = false;
+            showControlsTemporarily();
+        }
+    }
+
+    /** 把播放位置换算成进度条刻度。 */
+    private int positionToProgress(long positionMs) {
+        if (durationMs <= 0L) {
+            return 0;
+        }
+        return (int) Math.min(1000L, Math.max(0L, positionMs) * 1000L / durationMs);
+    }
+
+    /** 把进度条刻度换算成播放位置。 */
+    private long progressToPositionMs(int progress) {
+        if (durationMs <= 0L) {
+            return 0L;
+        }
+        int safeProgress = Math.max(0, Math.min(1000, progress));
+        return durationMs * safeProgress / 1000L;
+    }
+
+    /** 创建时间文本。 */
+    private TextView createTimeText(String text) {
+        TextView textView = new TextView(getContext());
+        textView.setText(text);
+        textView.setTextSize(12f);
+        textView.setTextColor(0xFF333333);
+        textView.setGravity(Gravity.CENTER);
+        textView.setMinWidth(dp(48));
+        return textView;
+    }
+
+    /** 把毫秒格式化成 mm:ss 或 h:mm:ss。 */
+    private String formatTime(long timeMs) {
+        long totalSeconds = Math.max(0L, timeMs / 1000L);
+        long hours = totalSeconds / 3600L;
+        long minutes = (totalSeconds % 3600L) / 60L;
+        long seconds = totalSeconds % 60L;
+        if (hours > 0L) {
+            return String.format(Locale.US, "%d:%02d:%02d", hours, minutes, seconds);
+        }
+        return String.format(Locale.US, "%02d:%02d", minutes, seconds);
+    }
+
+    /** 展示控制条并按播放状态安排自动隐藏。 */
+    private void showControlsTemporarily() {
+        showControls();
+        scheduleAutoHideControls();
+    }
+
+    /** 展示控制条。 */
+    private void showControls() {
+        controlsVisible = true;
+        controlsContainer.setVisibility(View.VISIBLE);
+        uiHandler.removeCallbacks(autoHideControlsRunnable);
+    }
+
+    /** 播放状态允许时安排自动隐藏控制条。 */
+    private void scheduleAutoHideControls() {
+        uiHandler.removeCallbacks(autoHideControlsRunnable);
+        if (viewState == ViewState.PLAYING && controlsVisible && !userSeeking) {
+            uiHandler.postDelayed(autoHideControlsRunnable, CONTROLS_AUTO_HIDE_DELAY_MS);
+        }
+    }
+
+    /** 在播放中隐藏控制条。 */
+    private void hideControlsIfAllowed() {
+        if (viewState == ViewState.PLAYING && !userSeeking) {
+            controlsVisible = false;
+            controlsContainer.setVisibility(View.GONE);
+        }
+    }
+
     /** 更新 PlayerView 状态覆盖层。 */
     private void updateViewState(ViewState state, String message, boolean showRetry) {
         viewState = state;
@@ -793,6 +1057,7 @@ public class ECHPlayerView extends LinearLayout {
             statusOverlay.setVisibility(View.GONE);
             retryButton.setVisibility(View.GONE);
             statusText.setText("");
+            scheduleAutoHideControls();
             return;
         }
 
@@ -800,9 +1065,20 @@ public class ECHPlayerView extends LinearLayout {
             safeMessage = defaultMessageForState(state);
         }
 
+        showControls();
         statusText.setText(safeMessage);
         retryButton.setVisibility(showRetry ? View.VISIBLE : View.GONE);
         statusOverlay.setVisibility(View.VISIBLE);
+    }
+
+    /** 构建适合用户阅读的短错误文案。 */
+    private String buildUserErrorMessage(int errorCode, String message) {
+        String safeMessage = message == null ? "" : message;
+        if (safeMessage.length() > 80) {
+            safeMessage = safeMessage.substring(0, 80) + "...";
+        }
+        return "播放失败，请检查地址或网络\n错误码: " + errorCode
+                + (safeMessage.length() == 0 ? "" : "\n" + safeMessage);
     }
 
     /** 返回状态默认文案。 */

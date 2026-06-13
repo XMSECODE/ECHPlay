@@ -71,6 +71,11 @@ v1.6 文档：
 1. `v1.6_requirements_goals.md`：v1.6 目标拆解和验收标准。
 2. `v1.6_validation_report.md`：v1.6 构建和功能验收记录。
 
+v1.7 文档：
+
+1. `v1.7_requirements_goals.md`：v1.7 PlayerView 体验增强目标拆解。
+2. `v1.7_validation_report.md`：v1.7 构建和功能验收记录。
+
 ## 快速运行 Demo
 
 ```bash
@@ -338,6 +343,11 @@ playerView.start();
 2. 缓冲开始时显示 `buffering` 文案，缓冲结束后自动隐藏。
 3. 播放错误时显示错误码和错误信息。
 4. 错误状态提供 `重试` 按钮，会复用最近一次 `videoPath`、渲染模式、解码模式和 RTSP 传输方式重新播放。
+5. 底部内置进度条、当前时间和总时长。
+6. 本地 MP4、HTTP MP4 等可 seek 媒体支持拖动进度条跳转。
+7. RTSP / HLS Live 等不可 seek 媒体会禁用进度条，并在拖动时输出明确日志。
+8. 播放中 3 秒无操作会自动隐藏控制条，点击视频区域可重新显示。
+9. 暂停、停止、loading、buffering 和 error 状态下控制条保持可见，便于继续操作。
 
 画面比例模式：
 
