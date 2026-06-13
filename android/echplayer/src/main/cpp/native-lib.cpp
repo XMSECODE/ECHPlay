@@ -385,6 +385,98 @@ Java_com_echplay_player_ECHPlayer_nativeGetDecodeFps(
 }
 
 extern "C"
+JNIEXPORT jdouble JNICALL
+Java_com_echplay_player_ECHPlayer_nativeGetRenderFps(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return 0.0;
+    }
+
+    return static_cast<jdouble>(player->getRenderFps());
+}
+
+extern "C"
+JNIEXPORT jlong JNICALL
+Java_com_echplay_player_ECHPlayer_nativeGetDecodedFrameCount(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return 0;
+    }
+
+    return static_cast<jlong>(player->getDecodedFrameCount());
+}
+
+extern "C"
+JNIEXPORT jlong JNICALL
+Java_com_echplay_player_ECHPlayer_nativeGetRenderedFrameCount(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return 0;
+    }
+
+    return static_cast<jlong>(player->getRenderedFrameCount());
+}
+
+extern "C"
+JNIEXPORT jlong JNICALL
+Java_com_echplay_player_ECHPlayer_nativeGetDroppedFrameCount(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return 0;
+    }
+
+    return static_cast<jlong>(player->getDroppedFrameCount());
+}
+
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_com_echplay_player_ECHPlayer_nativeGetMediaInfoText(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return env->NewStringUTF("");
+    }
+
+    std::string text = player->getMediaInfoText();
+    return env->NewStringUTF(text.c_str());
+}
+
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_com_echplay_player_ECHPlayer_nativeGetTrackInfoText(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return env->NewStringUTF("");
+    }
+
+    std::string text = player->getTrackInfoText();
+    return env->NewStringUTF(text.c_str());
+}
+
+extern "C"
 JNIEXPORT jboolean JNICALL
 Java_com_echplay_player_ECHPlayer_nativeIsSeekable(
         JNIEnv *env,

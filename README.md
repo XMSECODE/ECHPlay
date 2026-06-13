@@ -1,6 +1,6 @@
 # ECHPlay
 
-ECHPlay 是一个基于 FFmpeg 和 Android MediaCodec 的 Android 播放器项目。v1.4 已补齐硬解能力：在 v1.3 OpenGL ES、YUV420P 三纹理、渲染模式切换、视频尺寸回调和 `ECHPlayerView` 画面比例控制基础上，新增 H.264 / H.265 MediaCodec 硬解、软硬解切换、失败回退和当前解码方式展示。v1.5 进入网络播放稳定性和可观测性阶段，重点推进 HTTP / HTTPS / HLS / RTSP 验证、RTSP 自动重连、播放统计和 PlayerView 基础状态。
+ECHPlay 是一个基于 FFmpeg 和 Android MediaCodec 的 Android 播放器项目。v1.4 已补齐硬解能力：在 v1.3 OpenGL ES、YUV420P 三纹理、渲染模式切换、视频尺寸回调和 `ECHPlayerView` 画面比例控制基础上，新增 H.264 / H.265 MediaCodec 硬解、软硬解切换、失败回退和当前解码方式展示。v1.5 进入网络播放稳定性和可观测性阶段，重点推进 HTTP / HTTPS / HLS / RTSP 验证、RTSP 自动重连、播放统计和 PlayerView 基础状态。v1.6 进一步补齐媒体信息、轨道信息、prepare 耗时、首帧耗时、render fps、渲染帧数和丢帧统计，让 Demo 与业务侧都能更快定位播放问题。
 
 ## v1.4 能力
 
@@ -53,6 +53,23 @@ v1.5 文档：
 
 1. `v1.5_requirements_goals.md`：v1.5 目标拆解和验收标准。
 2. `v1.5_validation_report.md`：v1.5 协议、构建、统计和回归验证记录。
+
+## v1.6 能力
+
+v1.6 聚焦“媒体信息和性能统计”，主要新增：
+
+1. `ECHPlayer.MediaInfo`：提供封装格式、总时长、总码率、视频编码、视频宽高、音频编码、采样率和声道数。
+2. `ECHPlayer.TrackInfo`：提供每条 FFmpeg stream 的 index、type、codec、language、width、height、sampleRate 和 channels。
+3. `ECHPlayer.getMediaInfo()`：prepare 成功后读取当前媒体摘要。
+4. `ECHPlayer.getTrackInfo()`：prepare 成功后读取轨道列表。
+5. `ECHPlayer.PlaybackStats` 扩展：新增 render fps、解码帧数、渲染帧数、主动丢帧数、prepare 耗时和首帧耗时。
+6. 主 Demo：prepare 后直接打印媒体信息和轨道信息，状态栏展示 decode/render fps、D/R/Drop 帧数、prepare 和首帧耗时。
+7. `ECHPlayerView`：`INFO_PREPARED` 后通过事件日志输出媒体摘要和轨道数量。
+
+v1.6 文档：
+
+1. `v1.6_requirements_goals.md`：v1.6 目标拆解和验收标准。
+2. `v1.6_validation_report.md`：v1.6 构建和功能验收记录。
 
 ## 快速运行 Demo
 
@@ -231,6 +248,27 @@ int videoQueueSize = stats.videoPacketQueueSize;                // 视频 packet
 int audioQueueSize = stats.audioPacketQueueSize;                // 音频 packet 队列长度
 int bufferedPercent = stats.bufferedPercent;                    // 缓冲百分比估算值
 double decodeFps = stats.decodeFps;                             // 平均视频解码 FPS
+double renderFps = stats.renderFps;                             // 平均视频渲染 FPS
+long decodedFrames = stats.decodedFrameCount;                   // 累计解码视频帧数
+long renderedFrames = stats.renderedFrameCount;                 // 累计渲染视频帧数
+long droppedFrames = stats.droppedFrameCount;                   // 主动丢弃视频帧数
+long prepareCostMs = stats.prepareCostMs;                       // 最近一次 prepare 耗时
+long firstFrameCostMs = stats.firstFrameCostMs;                 // 最近一次 start 到首帧耗时
+```
+
+读取媒体信息和轨道信息：
+
+```java
+ECHPlayer.MediaInfo mediaInfo = player.getMediaInfo();
+String format = mediaInfo.format;                               // 封装格式
+String videoCodec = mediaInfo.videoCodec;                       // 视频编码名
+int videoWidth = mediaInfo.videoWidth;                          // 视频宽度
+int videoHeight = mediaInfo.videoHeight;                        // 视频高度
+
+List<ECHPlayer.TrackInfo> tracks = player.getTrackInfo();
+for (ECHPlayer.TrackInfo track : tracks) {
+    // track.type 可能是 video、audio、subtitle 或 other。
+}
 ```
 
 解码状态 info：
@@ -334,7 +372,7 @@ playerView.release();
 5. 解码模式：主页面和 PlayerView Demo 均可切换 `解码AUTO`、`软解`、`硬解`。
 6. 画面比例：PlayerView Demo 可切换 `fit`、`crop`、`fill`、`original`。
 
-主页面会展示播放器状态、协议类型、错误码、info 回调、缓冲事件、视频尺寸、渲染模式、目标解码模式、当前实际解码方式、解码器名称、硬解回退原因、读取速度、累计读取字节、音视频队列长度、缓冲百分比、decode fps、重连次数、截图路径、录制状态和录制文件路径。
+主页面会展示播放器状态、协议类型、错误码、info 回调、缓冲事件、视频尺寸、媒体信息、轨道信息、渲染模式、目标解码模式、当前实际解码方式、解码器名称、硬解回退原因、读取速度、累计读取字节、音视频队列长度、缓冲百分比、decode/render fps、D/R/Drop 帧数、prepare 耗时、首帧耗时、重连次数、截图路径、录制状态和录制文件路径。
 
 ## ABI 状态
 
@@ -418,7 +456,8 @@ android/echplayer/src/main/jniLibs/arm64-v8a
 
 ## 后续方向
 
-1. v1.5：网络协议验证、RTSP 自动重连、播放统计、PlayerView 基础状态和验证报告。
-2. v1.6：字幕、多音轨、更多像素格式渲染兼容和更完整的媒体信息面板。
-3. 后续版本：SurfaceTexture / Surface 零拷贝硬解渲染路径。
-4. 后续版本：更完整的机型黑名单 / 白名单和性能统计面板。
+1. v1.7：增强 `ECHPlayerView` 进度条、时间显示、seek、控制栏显隐和更完整的组件状态体验。
+2. v1.8：补齐 smoke check 脚本、兼容性矩阵、发布检查清单和回归文档。
+3. 后续版本：字幕、多音轨、更多像素格式渲染兼容和更完整的媒体信息面板。
+4. 后续版本：SurfaceTexture / Surface 零拷贝硬解渲染路径。
+5. 后续版本：更完整的机型黑名单 / 白名单和性能统计面板。

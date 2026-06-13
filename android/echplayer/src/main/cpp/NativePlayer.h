@@ -96,6 +96,24 @@ public:
     /** 获取平均视频解码帧率。 */
     double getDecodeFps();
 
+    /** 获取平均视频渲染帧率。 */
+    double getRenderFps();
+
+    /** 获取累计解码视频帧数。 */
+    int64_t getDecodedFrameCount();
+
+    /** 获取累计渲染视频帧数。 */
+    int64_t getRenderedFrameCount();
+
+    /** 获取累计主动丢弃视频帧数。 */
+    int64_t getDroppedFrameCount();
+
+    /** 获取当前媒体信息，使用简单键值行返回给 Java 解析。 */
+    std::string getMediaInfoText();
+
+    /** 获取当前轨道信息，使用简单键值行返回给 Java 解析。 */
+    std::string getTrackInfoText();
+
     /** 原子复制最近一帧解码快照。 */
     bool copyCurrentFrameSnapshot(
             std::vector<uint8_t> &rgbaData,
@@ -178,6 +196,10 @@ private:
     std::mutex speedMutex;
     /** 累计解码出的视频帧数。 */
     std::atomic<int64_t> decodedFrameTotal;
+    /** 累计渲染成功的视频帧数。 */
+    std::atomic<int64_t> renderedFrameTotal;
+    /** 累计主动丢弃的视频帧数。 */
+    std::atomic<int64_t> droppedFrameTotal;
     /** 解码 FPS 统计起始时间。 */
     std::chrono::steady_clock::time_point decodeFpsStartTime;
     /** Surface 渲染缩放方式，0 保持比例居中，1 拉伸填满。 */
@@ -378,6 +400,12 @@ private:
 
     /** 记录一帧已经解码出的视频帧。 */
     void recordDecodedVideoFrame();
+
+    /** 记录一帧已经渲染成功的视频帧。 */
+    void recordRenderedVideoFrame();
+
+    /** 记录一帧主动丢弃的视频帧。 */
+    void recordDroppedVideoFrame();
 
     /** 记录工作线程结束并更新播放状态。 */
     void markPlaybackWorkerFinished();

@@ -10,7 +10,11 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * Java 层播放器封装，负责桥接 UI 与 NativePlayer。
@@ -97,6 +101,18 @@ public class ECHPlayer implements AutoCloseable {
         public final int bufferedPercent;
         /** 平均视频解码帧率。 */
         public final double decodeFps;
+        /** 平均视频渲染帧率。 */
+        public final double renderFps;
+        /** 累计解码视频帧数。 */
+        public final long decodedFrameCount;
+        /** 累计渲染视频帧数。 */
+        public final long renderedFrameCount;
+        /** 累计主动丢弃视频帧数。 */
+        public final long droppedFrameCount;
+        /** 最近一次 prepare 耗时，单位毫秒。 */
+        public final long prepareCostMs;
+        /** 最近一次 start 到首帧耗时，单位毫秒。 */
+        public final long firstFrameCostMs;
         /** 统计采样时间戳，单位毫秒。 */
         public final long timestampMs;
 
@@ -108,6 +124,12 @@ public class ECHPlayer implements AutoCloseable {
                 int audioPacketQueueSize,
                 int bufferedPercent,
                 double decodeFps,
+                double renderFps,
+                long decodedFrameCount,
+                long renderedFrameCount,
+                long droppedFrameCount,
+                long prepareCostMs,
+                long firstFrameCostMs,
                 long timestampMs) {
 
             this.readBytes = readBytes;
@@ -116,7 +138,111 @@ public class ECHPlayer implements AutoCloseable {
             this.audioPacketQueueSize = audioPacketQueueSize;
             this.bufferedPercent = bufferedPercent;
             this.decodeFps = decodeFps;
+            this.renderFps = renderFps;
+            this.decodedFrameCount = decodedFrameCount;
+            this.renderedFrameCount = renderedFrameCount;
+            this.droppedFrameCount = droppedFrameCount;
+            this.prepareCostMs = prepareCostMs;
+            this.firstFrameCostMs = firstFrameCostMs;
             this.timestampMs = timestampMs;
+        }
+    }
+
+    /**
+     * 媒体信息快照，用于展示容器、时长、码率和最佳音视频流摘要。
+     */
+    public static class MediaInfo {
+        /** 封装格式名称。 */
+        public final String format;
+        /** 媒体总时长，单位毫秒。 */
+        public final long durationMs;
+        /** 总码率，单位 bit/s。 */
+        public final long bitRate;
+        /** 视频流索引。 */
+        public final int videoStreamIndex;
+        /** 音频流索引。 */
+        public final int audioStreamIndex;
+        /** 视频编码名。 */
+        public final String videoCodec;
+        /** 视频宽度。 */
+        public final int videoWidth;
+        /** 视频高度。 */
+        public final int videoHeight;
+        /** 音频编码名。 */
+        public final String audioCodec;
+        /** 音频采样率。 */
+        public final int audioSampleRate;
+        /** 音频声道数。 */
+        public final int audioChannels;
+
+        /** 创建媒体信息快照。 */
+        public MediaInfo(
+                String format,
+                long durationMs,
+                long bitRate,
+                int videoStreamIndex,
+                int audioStreamIndex,
+                String videoCodec,
+                int videoWidth,
+                int videoHeight,
+                String audioCodec,
+                int audioSampleRate,
+                int audioChannels) {
+
+            this.format = format;
+            this.durationMs = durationMs;
+            this.bitRate = bitRate;
+            this.videoStreamIndex = videoStreamIndex;
+            this.audioStreamIndex = audioStreamIndex;
+            this.videoCodec = videoCodec;
+            this.videoWidth = videoWidth;
+            this.videoHeight = videoHeight;
+            this.audioCodec = audioCodec;
+            this.audioSampleRate = audioSampleRate;
+            this.audioChannels = audioChannels;
+        }
+    }
+
+    /**
+     * 轨道信息快照，用于展示 FFmpeg 读取到的每条 stream。
+     */
+    public static class TrackInfo {
+        /** 轨道类型：video、audio、subtitle 或 other。 */
+        public final String type;
+        /** FFmpeg stream index。 */
+        public final int streamIndex;
+        /** 编码名。 */
+        public final String codec;
+        /** 语言标签，可能为空。 */
+        public final String language;
+        /** 视频宽度。 */
+        public final int width;
+        /** 视频高度。 */
+        public final int height;
+        /** 音频采样率。 */
+        public final int sampleRate;
+        /** 音频声道数。 */
+        public final int channels;
+
+        /** 创建轨道信息快照。 */
+        public TrackInfo(
+                String type,
+                int streamIndex,
+                String codec,
+                String language,
+                int width,
+                int height,
+                int sampleRate,
+                int channels) {
+
+            this.type = type;
+            this.streamIndex = streamIndex;
+            this.codec = codec;
+            this.language = language;
+            this.width = width;
+            this.height = height;
+            this.sampleRate = sampleRate;
+            this.channels = channels;
         }
     }
 
@@ -355,6 +481,14 @@ public class ECHPlayer implements AutoCloseable {
     private boolean reconnecting = false;
     /** 重连代次，用于 stop / release 后让旧线程失效。 */
     private int reconnectGeneration = 0;
+    /** 最近一次 prepare 开始时间，单位毫秒。 */
+    private long prepareStartTimeMs = 0L;
+    /** 最近一次 prepare 耗时，单位毫秒。 */
+    private long lastPrepareCostMs = -1L;
+    /** 最近一次 start 调用时间，单位毫秒。 */
+    private long startCallTimeMs = 0L;
+    /** 最近一次首帧耗时，单位毫秒。 */
+    private long firstFrameCostMs = -1L;
 
     /** Java 音频输出实例。 */
     private AudioTrack audioTrack;
@@ -411,6 +545,7 @@ public class ECHPlayer implements AutoCloseable {
         paused = false;
         reconnectCount = 0;
         reconnecting = false;
+        resetPlaybackTiming();
         resetVideoSize();
         resetPlaybackEventFlags();
     }
@@ -505,6 +640,7 @@ public class ECHPlayer implements AutoCloseable {
     /** 获取当前播放统计快照。 */
     public synchronized PlaybackStats getPlaybackStats() {
         checkReleased();
+        dispatchVideoRenderingStartIfReady();
         return new PlaybackStats(
                 nativeGetReadBytes(nativeHandle),
                 nativeGetReadSpeedBytesPerSecond(nativeHandle),
@@ -512,8 +648,26 @@ public class ECHPlayer implements AutoCloseable {
                 nativeGetAudioPacketQueueSize(nativeHandle),
                 nativeGetBufferedPercent(nativeHandle),
                 nativeGetDecodeFps(nativeHandle),
+                nativeGetRenderFps(nativeHandle),
+                nativeGetDecodedFrameCount(nativeHandle),
+                nativeGetRenderedFrameCount(nativeHandle),
+                nativeGetDroppedFrameCount(nativeHandle),
+                lastPrepareCostMs,
+                firstFrameCostMs,
                 System.currentTimeMillis()
         );
+    }
+
+    /** 获取当前媒体信息快照。 */
+    public synchronized MediaInfo getMediaInfo() {
+        checkReleased();
+        return parseMediaInfo(nativeGetMediaInfoText(nativeHandle));
+    }
+
+    /** 获取当前轨道信息快照列表。 */
+    public synchronized List<TrackInfo> getTrackInfo() {
+        checkReleased();
+        return parseTrackInfo(nativeGetTrackInfoText(nativeHandle));
     }
 
     /** 设置 long 类型播放器选项。 */
@@ -606,8 +760,10 @@ public class ECHPlayer implements AutoCloseable {
         checkReleased();
         requireState(State.INITIALIZED, State.STOPPED);
         state = State.PREPARING;
+        markPrepareStarted();
         dispatchInfo(INFO_PREPARE_STARTED, "prepare started");
         lastPrepareResult = nativePrepare(nativeHandle);
+        markPrepareFinished();
         updateDecodeInfoFromNative();
         prepared = lastPrepareResult != null && lastPrepareResult.startsWith("prepare success");
         playing = false;
@@ -634,12 +790,14 @@ public class ECHPlayer implements AutoCloseable {
         checkReleased();
         requireState(State.INITIALIZED, State.STOPPED);
         state = State.PREPARING;
+        markPrepareStarted();
         dispatchInfo(INFO_PREPARE_STARTED, "prepare started");
 
         Thread prepareThread = new Thread(() -> {
             synchronized (ECHPlayer.this) {
                 if (!released && nativeHandle != 0) {
                     lastPrepareResult = nativePrepare(nativeHandle);
+                    markPrepareFinished();
                     updateDecodeInfoFromNative();
                     prepared = lastPrepareResult != null
                             && lastPrepareResult.startsWith("prepare success");
@@ -681,6 +839,9 @@ public class ECHPlayer implements AutoCloseable {
             return lastStartResult;
         }
 
+        if (!playing) {
+            markStartRequested();
+        }
         lastStartResult = nativePlay(nativeHandle);
         if (lastStartResult != null
                 && (lastStartResult.startsWith("play started")
@@ -744,6 +905,8 @@ public class ECHPlayer implements AutoCloseable {
             prepared = false;
             playing = false;
             paused = false;
+            resetPlaybackTiming();
+            resetPlaybackEventFlags();
             state = State.STOPPED;
             dispatchInfo(INFO_STOPPED, "stop");
         }
@@ -778,6 +941,7 @@ public class ECHPlayer implements AutoCloseable {
         currentDataSource = "";
         reconnectCount = 0;
         reconnecting = false;
+        resetPlaybackTiming();
         resetVideoSize();
         resetPlaybackEventFlags();
         state = State.IDLE;
@@ -1039,6 +1203,7 @@ public class ECHPlayer implements AutoCloseable {
             playing = false;
             paused = false;
             recordingState = RecordingState.IDLE;
+            resetPlaybackTiming();
             resetVideoSize();
             state = State.RELEASED;
 
@@ -1319,7 +1484,9 @@ public class ECHPlayer implements AutoCloseable {
                 nativeSetRenderMode(nativeHandle, renderMode);
                 nativeSetDecodeMode(nativeHandle, decodeMode);
 
+                markPrepareStarted();
                 lastPrepareResult = nativePrepare(nativeHandle);
+                markPrepareFinished();
                 updateDecodeInfoFromNative();
                 prepared = lastPrepareResult != null
                         && lastPrepareResult.startsWith("prepare success");
@@ -1337,6 +1504,7 @@ public class ECHPlayer implements AutoCloseable {
                 dispatchInfo(INFO_PREPARED, lastPrepareResult);
                 dispatchBufferingUpdate(100);
 
+                markStartRequested();
                 lastStartResult = nativePlay(nativeHandle);
                 if (lastStartResult != null
                         && (lastStartResult.startsWith("play started")
@@ -1485,7 +1653,164 @@ public class ECHPlayer implements AutoCloseable {
         int height = frameSize != null && frameSize.length >= 2 ? frameSize[1] : 0;
         if (width > 0 && height > 0) {
             videoRenderingStarted = true;
-            dispatchInfo(INFO_VIDEO_RENDERING_START, "video rendering started");
+            if (startCallTimeMs > 0 && firstFrameCostMs < 0L) {
+                firstFrameCostMs = Math.max(0L, System.currentTimeMillis() - startCallTimeMs);
+            }
+            dispatchInfo(
+                    INFO_VIDEO_RENDERING_START,
+                    "video rendering started\nfirstFrameCostMs: " + firstFrameCostMs
+            );
+        }
+    }
+
+    /** 重置 Java 层播放耗时统计。 */
+    private void resetPlaybackTiming() {
+        prepareStartTimeMs = 0L;
+        lastPrepareCostMs = -1L;
+        startCallTimeMs = 0L;
+        firstFrameCostMs = -1L;
+    }
+
+    /** 记录 prepare 开始时间。 */
+    private void markPrepareStarted() {
+        prepareStartTimeMs = System.currentTimeMillis();
+        lastPrepareCostMs = -1L;
+    }
+
+    /** 记录 prepare 完成耗时。 */
+    private void markPrepareFinished() {
+        if (prepareStartTimeMs > 0L) {
+            lastPrepareCostMs = Math.max(0L, System.currentTimeMillis() - prepareStartTimeMs);
+        } else {
+            lastPrepareCostMs = -1L;
+        }
+        prepareStartTimeMs = 0L;
+    }
+
+    /** 记录 start 发起时间，用于计算首帧耗时。 */
+    private void markStartRequested() {
+        startCallTimeMs = System.currentTimeMillis();
+        firstFrameCostMs = -1L;
+    }
+
+    /** 解析 Native 返回的媒体信息文本。 */
+    private MediaInfo parseMediaInfo(String text) {
+        Map<String, String> values = parseKeyValueLines(text);
+        return new MediaInfo(
+                valueOrEmpty(values, "format"),
+                parseLong(values.get("durationMs"), 0L),
+                parseLong(values.get("bitRate"), 0L),
+                parseInt(values.get("videoStreamIndex"), -1),
+                parseInt(values.get("audioStreamIndex"), -1),
+                valueOrEmpty(values, "videoCodec"),
+                parseInt(values.get("videoWidth"), 0),
+                parseInt(values.get("videoHeight"), 0),
+                valueOrEmpty(values, "audioCodec"),
+                parseInt(values.get("audioSampleRate"), 0),
+                parseInt(values.get("audioChannels"), 0)
+        );
+    }
+
+    /** 解析 Native 返回的轨道信息文本。 */
+    private List<TrackInfo> parseTrackInfo(String text) {
+        List<TrackInfo> tracks = new ArrayList<>();
+        if (text == null || text.length() == 0) {
+            return tracks;
+        }
+
+        Map<String, String> current = null;
+        String[] lines = text.split("\\n");
+        for (String rawLine : lines) {
+            String line = rawLine == null ? "" : rawLine.trim();
+            if (line.length() == 0) {
+                continue;
+            }
+            if ("track".equals(line)) {
+                addTrackInfoFromMap(tracks, current);
+                current = new HashMap<>();
+                continue;
+            }
+            if (current == null) {
+                current = new HashMap<>();
+            }
+            putKeyValueLine(current, line);
+        }
+        addTrackInfoFromMap(tracks, current);
+        return tracks;
+    }
+
+    /** 从键值表创建并加入一条轨道信息。 */
+    private void addTrackInfoFromMap(List<TrackInfo> tracks, Map<String, String> values) {
+        if (values == null || values.isEmpty()) {
+            return;
+        }
+        tracks.add(new TrackInfo(
+                valueOrEmpty(values, "type"),
+                parseInt(values.get("index"), -1),
+                valueOrEmpty(values, "codec"),
+                valueOrEmpty(values, "language"),
+                parseInt(values.get("width"), 0),
+                parseInt(values.get("height"), 0),
+                parseInt(values.get("sampleRate"), 0),
+                parseInt(values.get("channels"), 0)
+        ));
+    }
+
+    /** 解析多行 key=value 文本为 Map。 */
+    private Map<String, String> parseKeyValueLines(String text) {
+        Map<String, String> values = new HashMap<>();
+        if (text == null || text.length() == 0) {
+            return values;
+        }
+
+        String[] lines = text.split("\\n");
+        for (String rawLine : lines) {
+            putKeyValueLine(values, rawLine == null ? "" : rawLine.trim());
+        }
+        return values;
+    }
+
+    /** 把单行 key=value 放入 Map。 */
+    private void putKeyValueLine(Map<String, String> values, String line) {
+        int separatorIndex = line.indexOf('=');
+        if (separatorIndex <= 0) {
+            return;
+        }
+
+        String key = line.substring(0, separatorIndex).trim();
+        String value = line.substring(separatorIndex + 1).trim();
+        if (key.length() > 0) {
+            values.put(key, value);
+        }
+    }
+
+    /** 从 Map 读取字符串，空值统一返回空字符串。 */
+    private String valueOrEmpty(Map<String, String> values, String key) {
+        String value = values.get(key);
+        return value == null ? "" : value;
+    }
+
+    /** 安全解析 long，失败时返回默认值。 */
+    private long parseLong(String value, long defaultValue) {
+        if (value == null || value.length() == 0) {
+            return defaultValue;
+        }
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException ignored) {
+            return defaultValue;
+        }
+    }
+
+    /** 安全解析 int，失败时返回默认值。 */
+    private int parseInt(String value, int defaultValue) {
+        if (value == null || value.length() == 0) {
+            return defaultValue;
+        }
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException ignored) {
+            return defaultValue;
         }
     }
 
@@ -1604,6 +1929,24 @@ public class ECHPlayer implements AutoCloseable {
 
     /** 调用 NativePlayer.getDecodeFps。 */
     private native double nativeGetDecodeFps(long nativeHandle);
+
+    /** 调用 NativePlayer.getRenderFps。 */
+    private native double nativeGetRenderFps(long nativeHandle);
+
+    /** 调用 NativePlayer.getDecodedFrameCount。 */
+    private native long nativeGetDecodedFrameCount(long nativeHandle);
+
+    /** 调用 NativePlayer.getRenderedFrameCount。 */
+    private native long nativeGetRenderedFrameCount(long nativeHandle);
+
+    /** 调用 NativePlayer.getDroppedFrameCount。 */
+    private native long nativeGetDroppedFrameCount(long nativeHandle);
+
+    /** 调用 NativePlayer.getMediaInfoText。 */
+    private native String nativeGetMediaInfoText(long nativeHandle);
+
+    /** 调用 NativePlayer.getTrackInfoText。 */
+    private native String nativeGetTrackInfoText(long nativeHandle);
 
     /** 调用 NativePlayer.isSeekable。 */
     private native boolean nativeIsSeekable(long nativeHandle);

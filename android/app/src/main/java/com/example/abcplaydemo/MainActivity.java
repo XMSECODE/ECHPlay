@@ -31,6 +31,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -450,6 +451,8 @@ public class MainActivity extends AppCompatActivity {
                 updateRecordButtonState();
                 return;
             }
+            appendLog(formatMediaInfo(player.getMediaInfo()));
+            appendLog(formatTrackInfo(player.getTrackInfo()));
 
             durationMs = Math.max(0, player.getDuration());
             durationTimeText.setText(formatTime(durationMs));
@@ -922,9 +925,81 @@ public class MainActivity extends AppCompatActivity {
         builder.append("%");
         builder.append("  FPS：");
         builder.append(String.format(Locale.US, "%.1f", stats.decodeFps));
+        builder.append("/");
+        builder.append(String.format(Locale.US, "%.1f", stats.renderFps));
         builder.append("  重连：");
         builder.append(player.getReconnectCount());
+        builder.append("\n帧数 D/R/Drop：");
+        builder.append(stats.decodedFrameCount);
+        builder.append("/");
+        builder.append(stats.renderedFrameCount);
+        builder.append("/");
+        builder.append(stats.droppedFrameCount);
+        builder.append("  prepare：");
+        builder.append(formatCostMs(stats.prepareCostMs));
+        builder.append("  首帧：");
+        builder.append(formatCostMs(stats.firstFrameCostMs));
         decodeStatusText.setText(builder.toString());
+    }
+
+    /** 格式化媒体信息，方便 Demo 日志阅读。 */
+    private String formatMediaInfo(ECHPlayer.MediaInfo info) {
+        if (info == null) {
+            return "media info: unavailable";
+        }
+
+        return "media info"
+                + "\nformat: " + emptyToDash(info.format)
+                + "\nduration: " + formatTime(info.durationMs)
+                + "\nbitRate: " + formatBitRate(info.bitRate)
+                + "\nvideo: #" + info.videoStreamIndex
+                + " " + emptyToDash(info.videoCodec)
+                + " " + info.videoWidth + "x" + info.videoHeight
+                + "\naudio: #" + info.audioStreamIndex
+                + " " + emptyToDash(info.audioCodec)
+                + " " + info.audioSampleRate + "Hz"
+                + " " + info.audioChannels + "ch";
+    }
+
+    /** 格式化轨道信息，方便 Demo 日志阅读。 */
+    private String formatTrackInfo(List<ECHPlayer.TrackInfo> tracks) {
+        if (tracks == null || tracks.isEmpty()) {
+            return "track info: empty";
+        }
+
+        StringBuilder builder = new StringBuilder();
+        builder.append("track info: ");
+        builder.append(tracks.size());
+        builder.append(" track(s)");
+        for (ECHPlayer.TrackInfo track : tracks) {
+            builder.append("\n#");
+            builder.append(track.streamIndex);
+            builder.append(" ");
+            builder.append(emptyToDash(track.type));
+            builder.append(" ");
+            builder.append(emptyToDash(track.codec));
+            if (track.width > 0 && track.height > 0) {
+                builder.append(" ");
+                builder.append(track.width);
+                builder.append("x");
+                builder.append(track.height);
+            }
+            if (track.sampleRate > 0) {
+                builder.append(" ");
+                builder.append(track.sampleRate);
+                builder.append("Hz");
+            }
+            if (track.channels > 0) {
+                builder.append(" ");
+                builder.append(track.channels);
+                builder.append("ch");
+            }
+            if (track.language != null && track.language.length() > 0) {
+                builder.append(" ");
+                builder.append(track.language);
+            }
+        }
+        return builder.toString();
     }
 
     /** 把最近一帧解码后的 RGBA 数据保存为 PNG。 */
@@ -1027,6 +1102,27 @@ public class MainActivity extends AppCompatActivity {
     /** 把字节每秒格式化成易读速度文本。 */
     private String formatByteSpeed(long bytesPerSecond) {
         return formatBytes(bytesPerSecond) + "/s";
+    }
+
+    /** 把码率格式化成易读文本。 */
+    private String formatBitRate(long bitRate) {
+        if (bitRate <= 0L) {
+            return "unknown";
+        }
+        if (bitRate < 1000L * 1000L) {
+            return String.format(Locale.US, "%.1f Kbps", bitRate / 1000.0);
+        }
+        return String.format(Locale.US, "%.2f Mbps", bitRate / 1000.0 / 1000.0);
+    }
+
+    /** 把耗时格式化成易读文本。 */
+    private String formatCostMs(long costMs) {
+        return costMs < 0L ? "--" : costMs + "ms";
+    }
+
+    /** 空字符串展示为短横线。 */
+    private String emptyToDash(String value) {
+        return value == null || value.length() == 0 ? "-" : value;
     }
 
     /** 把 asset 中的测试文件复制到缓存目录。 */

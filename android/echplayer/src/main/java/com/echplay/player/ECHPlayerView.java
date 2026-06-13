@@ -19,6 +19,7 @@ import android.widget.TextView;
 import java.io.File;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -429,6 +430,8 @@ public class ECHPlayerView extends LinearLayout {
 
         if (infoCode == ECHPlayer.INFO_PREPARE_STARTED) {
             updateViewState(ViewState.LOADING, "正在准备播放...", false);
+        } else if (infoCode == ECHPlayer.INFO_PREPARED) {
+            emitMediaAndTrackInfo(targetPlayer);
         } else if (infoCode == ECHPlayer.INFO_BUFFERING_START) {
             updateViewState(ViewState.BUFFERING, "正在缓冲...", false);
         } else if (infoCode == ECHPlayer.INFO_BUFFERING_END
@@ -442,6 +445,25 @@ public class ECHPlayerView extends LinearLayout {
                 + "\ncurrentDecode: " + targetPlayer.getCurrentDecodeType()
                 + "\ndecoder: " + targetPlayer.getCurrentDecoderName()
                 + "\nfallbackReason: " + targetPlayer.getLastDecodeFallbackReason());
+    }
+
+    /** 输出媒体和轨道摘要到事件日志。 */
+    private void emitMediaAndTrackInfo(ECHPlayer targetPlayer) {
+        ECHPlayer.MediaInfo mediaInfo = targetPlayer.getMediaInfo();
+        List<ECHPlayer.TrackInfo> tracks = targetPlayer.getTrackInfo();
+        emitEvent("PlayerView media"
+                + "\nformat: " + emptyToDash(mediaInfo.format)
+                + "\ndurationMs: " + mediaInfo.durationMs
+                + "\nbitRate: " + mediaInfo.bitRate
+                + "\nvideo: #" + mediaInfo.videoStreamIndex
+                + " " + emptyToDash(mediaInfo.videoCodec)
+                + " " + mediaInfo.videoWidth + "x" + mediaInfo.videoHeight
+                + "\naudio: #" + mediaInfo.audioStreamIndex
+                + " " + emptyToDash(mediaInfo.audioCodec)
+                + " " + mediaInfo.audioSampleRate + "Hz"
+                + " " + mediaInfo.audioChannels + "ch"
+                + "\ntracks: " + tracks.size()
+        );
     }
 
     /** 处理播放器错误并显示重试入口。 */
@@ -702,6 +724,11 @@ public class ECHPlayerView extends LinearLayout {
             return "mediacodec";
         }
         return "auto";
+    }
+
+    /** 空字符串展示为短横线。 */
+    private String emptyToDash(String value) {
+        return value == null || value.length() == 0 ? "-" : value;
     }
 
     /** 保存当前解码帧截图。 */

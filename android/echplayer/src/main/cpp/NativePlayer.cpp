@@ -18,6 +18,7 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
+#include <libavutil/dict.h>
 #include <libavutil/error.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/pixdesc.h>
@@ -92,6 +93,8 @@ NativePlayer::NativePlayer(JavaVM *vm, JNIEnv *env, jobject javaPlayer)
           readSpeedBytesPerSecond(0),
           lastSpeedTime(std::chrono::steady_clock::now()),
           decodedFrameTotal(0),
+          renderedFrameTotal(0),
+          droppedFrameTotal(0),
           decodeFpsStartTime(std::chrono::steady_clock::now()),
           surfaceScaleType(0),
           renderMode(0),
@@ -744,6 +747,119 @@ double NativePlayer::getDecodeFps() {
     return static_cast<double>(frameCount) * 1000.0 / static_cast<double>(elapsedMs);
 }
 
+/** 返回平均视频渲染帧率。 */
+double NativePlayer::getRenderFps() {
+    int64_t frameCount = renderedFrameTotal.load();
+    if (frameCount <= 0) {
+        return 0.0;
+    }
+
+    auto now = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point startTime;
+    {
+        std::lock_guard<std::mutex> lock(speedMutex);
+        startTime = decodeFpsStartTime;
+    }
+    auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - startTime
+    ).count();
+    if (elapsedMs <= 0) {
+        return 0.0;
+    }
+
+    return static_cast<double>(frameCount) * 1000.0 / static_cast<double>(elapsedMs);
+}
+
+/** 返回累计解码视频帧数。 */
+int64_t NativePlayer::getDecodedFrameCount() {
+    return decodedFrameTotal.load();
+}
+
+/** 返回累计渲染视频帧数。 */
+int64_t NativePlayer::getRenderedFrameCount() {
+    return renderedFrameTotal.load();
+}
+
+/** 返回累计主动丢弃视频帧数。 */
+int64_t NativePlayer::getDroppedFrameCount() {
+    return droppedFrameTotal.load();
+}
+
+/** 返回当前媒体信息文本。 */
+std::string NativePlayer::getMediaInfoText() {
+    std::ostringstream oss;
+    if (formatContext == nullptr) {
+        return "";
+    }
+
+    oss << "format=";
+    if (formatContext->iformat != nullptr && formatContext->iformat->name != nullptr) {
+        oss << formatContext->iformat->name;
+    }
+    oss << "\n";
+    oss << "durationMs=" << getDurationMs() << "\n";
+    oss << "bitRate=" << formatContext->bit_rate << "\n";
+    oss << "videoStreamIndex=" << videoStreamIndex << "\n";
+    oss << "audioStreamIndex=" << audioStreamIndex << "\n";
+
+    if (videoStreamIndex >= 0) {
+        AVCodecParameters *videoCodecPar = formatContext->streams[videoStreamIndex]->codecpar;
+        if (videoCodecPar != nullptr) {
+            oss << "videoCodec=" << avcodec_get_name(videoCodecPar->codec_id) << "\n";
+            oss << "videoWidth=" << videoCodecPar->width << "\n";
+            oss << "videoHeight=" << videoCodecPar->height << "\n";
+        }
+    }
+
+    if (audioStreamIndex >= 0) {
+        AVCodecParameters *audioCodecPar = formatContext->streams[audioStreamIndex]->codecpar;
+        if (audioCodecPar != nullptr) {
+            oss << "audioCodec=" << avcodec_get_name(audioCodecPar->codec_id) << "\n";
+            oss << "audioSampleRate=" << audioCodecPar->sample_rate << "\n";
+            oss << "audioChannels=" << audioCodecPar->ch_layout.nb_channels << "\n";
+        }
+    }
+
+    return oss.str();
+}
+
+/** 返回当前轨道信息文本。 */
+std::string NativePlayer::getTrackInfoText() {
+    std::ostringstream oss;
+    if (formatContext == nullptr) {
+        return "";
+    }
+
+    for (unsigned int index = 0; index < formatContext->nb_streams; ++index) {
+        AVStream *stream = formatContext->streams[index];
+        if (stream == nullptr || stream->codecpar == nullptr) {
+            continue;
+        }
+
+        AVCodecParameters *codecPar = stream->codecpar;
+        oss << "track\n";
+        oss << "index=" << index << "\n";
+        if (codecPar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            oss << "type=video\n";
+        } else if (codecPar->codec_type == AVMEDIA_TYPE_AUDIO) {
+            oss << "type=audio\n";
+        } else if (codecPar->codec_type == AVMEDIA_TYPE_SUBTITLE) {
+            oss << "type=subtitle\n";
+        } else {
+            oss << "type=other\n";
+        }
+        oss << "codec=" << avcodec_get_name(codecPar->codec_id) << "\n";
+        AVDictionaryEntry *language = av_dict_get(stream->metadata, "language", nullptr, 0);
+        oss << "language=" << (language != nullptr && language->value != nullptr ? language->value : "") << "\n";
+        oss << "width=" << codecPar->width << "\n";
+        oss << "height=" << codecPar->height << "\n";
+        oss << "sampleRate=" << codecPar->sample_rate << "\n";
+        oss << "channels=" << codecPar->ch_layout.nb_channels << "\n";
+    }
+
+    return oss.str();
+}
+
 /** 原子复制最近一帧截图快照。 */
 bool NativePlayer::copyCurrentFrameSnapshot(
         std::vector<uint8_t> &rgbaData,
@@ -1061,6 +1177,7 @@ void NativePlayer::decodeLoop() {
 
                     if (diffUs <= -syncThresholdUs) {
                         droppedFrameCount++;
+                        recordDroppedVideoFrame();
                         av_frame_unref(decodedFrame);
                         return true;
                     }
@@ -1081,7 +1198,9 @@ void NativePlayer::decodeLoop() {
             return false;
         }
 
-        renderFrameToSurface(decodedFrame);
+        if (renderFrameToSurface(decodedFrame)) {
+            recordRenderedVideoFrame();
+        }
         av_frame_unref(decodedFrame);
         return true;
     };
@@ -1259,7 +1378,9 @@ bool NativePlayer::tryMediaCodecDecodeLoop(
             if (stopRequested.load()) {
                 break;
             }
-            renderMediaCodecFrame(decodedFrame);
+            if (renderMediaCodecFrame(decodedFrame)) {
+                recordRenderedVideoFrame();
+            }
             decodedFrameCount++;
             recordDecodedVideoFrame();
             std::this_thread::sleep_for(std::chrono::microseconds(frameDurationUs));
@@ -2197,6 +2318,8 @@ void NativePlayer::resetPlaybackStats() {
     speedWindowBytes = 0;
     readSpeedBytesPerSecond = 0;
     decodedFrameTotal = 0;
+    renderedFrameTotal = 0;
+    droppedFrameTotal = 0;
     std::lock_guard<std::mutex> lock(speedMutex);
     lastSpeedTime = std::chrono::steady_clock::now();
     decodeFpsStartTime = lastSpeedTime;
@@ -2229,6 +2352,16 @@ void NativePlayer::recordReadBytes(int packetSize) {
 /** 记录一帧已经解码出的视频帧。 */
 void NativePlayer::recordDecodedVideoFrame() {
     decodedFrameTotal.fetch_add(1);
+}
+
+/** 记录一帧已经渲染成功的视频帧。 */
+void NativePlayer::recordRenderedVideoFrame() {
+    renderedFrameTotal.fetch_add(1);
+}
+
+/** 记录一帧主动丢弃的视频帧。 */
+void NativePlayer::recordDroppedVideoFrame() {
+    droppedFrameTotal.fetch_add(1);
 }
 
 /** 记录一个播放工作线程结束。 */
