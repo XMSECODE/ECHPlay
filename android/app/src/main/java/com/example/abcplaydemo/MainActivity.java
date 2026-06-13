@@ -60,6 +60,8 @@ public class MainActivity extends AppCompatActivity {
     private static final String KEY_PLAY_MODE = "play_mode";
     /** 本地文件路径缓存 key。 */
     private static final String KEY_LOCAL_FILE_PATH = "local_file_path";
+    /** Demo 日志最大字符数，避免长时间播放时 UI 文本过大。 */
+    private static final int MAX_LOG_TEXT_LENGTH = 12000;
 
     /** 视频显示控件。 */
     private SurfaceView surfaceView;
@@ -109,6 +111,8 @@ public class MainActivity extends AppCompatActivity {
     private Button pauseButton;
     /** 继续按钮。 */
     private Button resumeButton;
+    /** 跳转到中间位置按钮。 */
+    private Button seekMiddleButton;
     /** 停止按钮。 */
     private Button stopButton;
     /** 截图按钮。 */
@@ -141,6 +145,8 @@ public class MainActivity extends AppCompatActivity {
     private String currentRecordingPath = null;
     /** 最近一次截图文件路径。 */
     private String lastCapturePath = null;
+    /** 最近一次展示的缓冲百分比。 */
+    private int lastBufferingPercent = -1;
     /** 主线程 Handler。 */
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     /** 定时刷新进度的任务。 */
@@ -182,6 +188,7 @@ public class MainActivity extends AppCompatActivity {
         pickFileButton = findViewById(R.id.pickFileButton);
         pauseButton = findViewById(R.id.pauseButton);
         resumeButton = findViewById(R.id.resumeButton);
+        seekMiddleButton = findViewById(R.id.seekMiddleButton);
         stopButton = findViewById(R.id.stopButton);
         captureButton = findViewById(R.id.captureButton);
         recordButton = findViewById(R.id.recordButton);
@@ -242,6 +249,8 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
         });
+
+        seekMiddleButton.setOnClickListener(v -> seekToMiddle());
 
         stopButton.setOnClickListener(v -> {
             if (player != null) {
@@ -341,6 +350,31 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    /** 跳到媒体中间位置，方便验证 HTTP / HLS 等点播流 seek。 */
+    private void seekToMiddle() {
+        if (player == null) {
+            appendLog("seek middle ignored: player is null");
+            return;
+        }
+
+        long latestDurationMs = Math.max(durationMs, player.getDuration());
+        if (latestDurationMs <= 0 || !player.isSeekable()) {
+            appendLog("seek middle ignored: 当前媒体不支持 seek");
+            return;
+        }
+
+        long targetPositionMs = latestDurationMs / 2L;
+        try {
+            String seekInfo = player.seekTo(targetPositionMs);
+            appendLog("seek middle: " + formatTime(targetPositionMs)
+                    + "\n" + seekInfo
+                    + "\nstate: " + player.getState());
+            updateProgressUi();
+        } catch (IllegalStateException e) {
+            appendLog("seek middle ignored: " + e.getMessage());
+        }
+    }
+
     /** 尝试启动播放。 */
     private void tryStartPlayback() {
         Surface surface = surfaceView.getHolder().getSurface();
@@ -367,6 +401,7 @@ public class MainActivity extends AppCompatActivity {
         player = new ECHPlayer();
         bindPlayerCallbacks(player);
         currentRecordingPath = null;
+        lastBufferingPercent = -1;
         durationMs = 0;
         progressSeekBar.setProgress(0);
         currentTimeText.setText(formatTime(0));
@@ -481,7 +516,7 @@ public class MainActivity extends AppCompatActivity {
         });
 
         targetPlayer.setOnBufferingUpdateListener((callbackPlayer, percent) ->
-                postToUi(() -> appendLog("缓冲进度: " + percent + "%")));
+                postToUi(() -> appendBufferingLog(percent)));
 
         targetPlayer.setOnVideoSizeChangedListener((callbackPlayer, width, height) ->
                 postToUi(() -> appendLog(
@@ -756,6 +791,26 @@ public class MainActivity extends AppCompatActivity {
     /** 追加一条日志到页面。 */
     private void appendLog(String message) {
         sampleText.append("\n" + message);
+        trimLogTextIfNeeded();
+    }
+
+    /** 追加缓冲日志，相同百分比不重复刷屏。 */
+    private void appendBufferingLog(int percent) {
+        if (percent == lastBufferingPercent) {
+            return;
+        }
+        lastBufferingPercent = percent;
+        appendLog("缓冲进度: " + percent + "%");
+    }
+
+    /** 日志过长时只保留尾部，保证 Demo 长时间播放仍可操作。 */
+    private void trimLogTextIfNeeded() {
+        CharSequence currentText = sampleText.getText();
+        if (currentText == null || currentText.length() <= MAX_LOG_TEXT_LENGTH) {
+            return;
+        }
+        int start = currentText.length() - MAX_LOG_TEXT_LENGTH;
+        sampleText.setText("...日志已截断，保留最近内容...\n" + currentText.subSequence(start, currentText.length()));
     }
 
     /** 启动进度刷新任务。 */
