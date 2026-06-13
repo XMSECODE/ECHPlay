@@ -81,6 +81,45 @@ public class ECHPlayer implements AutoCloseable {
         }
     }
 
+    /**
+     * 播放统计快照，用于 Demo 或业务侧观察网络读取、缓冲队列和解码速度。
+     */
+    public static class PlaybackStats {
+        /** 累计读取字节数。 */
+        public final long readBytes;
+        /** 当前读取速度，单位字节/秒。 */
+        public final long readSpeedBytesPerSecond;
+        /** 视频 packet 队列长度。 */
+        public final int videoPacketQueueSize;
+        /** 音频 packet 队列长度。 */
+        public final int audioPacketQueueSize;
+        /** 缓冲百分比估算值。 */
+        public final int bufferedPercent;
+        /** 平均视频解码帧率。 */
+        public final double decodeFps;
+        /** 统计采样时间戳，单位毫秒。 */
+        public final long timestampMs;
+
+        /** 创建播放统计快照。 */
+        public PlaybackStats(
+                long readBytes,
+                long readSpeedBytesPerSecond,
+                int videoPacketQueueSize,
+                int audioPacketQueueSize,
+                int bufferedPercent,
+                double decodeFps,
+                long timestampMs) {
+
+            this.readBytes = readBytes;
+            this.readSpeedBytesPerSecond = readSpeedBytesPerSecond;
+            this.videoPacketQueueSize = videoPacketQueueSize;
+            this.audioPacketQueueSize = audioPacketQueueSize;
+            this.bufferedPercent = bufferedPercent;
+            this.decodeFps = decodeFps;
+            this.timestampMs = timestampMs;
+        }
+    }
+
     /** 打开输入失败。 */
     public static final int ERROR_OPEN_INPUT_FAILED = 1001;
     /** 读取流信息失败。 */
@@ -461,6 +500,20 @@ public class ECHPlayer implements AutoCloseable {
     /** 返回当前播放生命周期内已经尝试的重连次数。 */
     public synchronized int getReconnectCount() {
         return reconnectCount;
+    }
+
+    /** 获取当前播放统计快照。 */
+    public synchronized PlaybackStats getPlaybackStats() {
+        checkReleased();
+        return new PlaybackStats(
+                nativeGetReadBytes(nativeHandle),
+                nativeGetReadSpeedBytesPerSecond(nativeHandle),
+                nativeGetVideoPacketQueueSize(nativeHandle),
+                nativeGetAudioPacketQueueSize(nativeHandle),
+                nativeGetBufferedPercent(nativeHandle),
+                nativeGetDecodeFps(nativeHandle),
+                System.currentTimeMillis()
+        );
     }
 
     /** 设置 long 类型播放器选项。 */
@@ -1533,6 +1586,24 @@ public class ECHPlayer implements AutoCloseable {
 
     /** 调用 NativePlayer.getCurrentPositionMs。 */
     private native long nativeGetCurrentPositionMs(long nativeHandle);
+
+    /** 调用 NativePlayer.getReadBytes。 */
+    private native long nativeGetReadBytes(long nativeHandle);
+
+    /** 调用 NativePlayer.getReadSpeedBytesPerSecond。 */
+    private native long nativeGetReadSpeedBytesPerSecond(long nativeHandle);
+
+    /** 调用 NativePlayer.getVideoPacketQueueSize。 */
+    private native int nativeGetVideoPacketQueueSize(long nativeHandle);
+
+    /** 调用 NativePlayer.getAudioPacketQueueSize。 */
+    private native int nativeGetAudioPacketQueueSize(long nativeHandle);
+
+    /** 调用 NativePlayer.getBufferedPercent。 */
+    private native int nativeGetBufferedPercent(long nativeHandle);
+
+    /** 调用 NativePlayer.getDecodeFps。 */
+    private native double nativeGetDecodeFps(long nativeHandle);
 
     /** 调用 NativePlayer.isSeekable。 */
     private native boolean nativeIsSeekable(long nativeHandle);

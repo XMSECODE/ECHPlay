@@ -87,6 +87,12 @@ NativePlayer::NativePlayer(JavaVM *vm, JNIEnv *env, jobject javaPlayer)
           demuxFinished(false),
           activePlaybackWorkers(0),
           audioClockUs(std::numeric_limits<int64_t>::min()),
+          totalReadBytes(0),
+          speedWindowBytes(0),
+          readSpeedBytesPerSecond(0),
+          lastSpeedTime(std::chrono::steady_clock::now()),
+          decodedFrameTotal(0),
+          decodeFpsStartTime(std::chrono::steady_clock::now()),
           surfaceScaleType(0),
           renderMode(0),
           decodeMode(0),
@@ -289,6 +295,7 @@ std::string NativePlayer::prepare() {
     }
 
     releaseFormatContext();
+    resetPlaybackStats();
 
     ECH_LOGI("prepare start: %s", dataSource.c_str());
 
@@ -455,6 +462,7 @@ std::string NativePlayer::play() {
     }
 
     clearPacketQueues();
+    resetPlaybackStats();
 
     stopRequested = false;
     paused = false;
@@ -515,6 +523,7 @@ void NativePlayer::stop() {
     }
 
     clearPacketQueues();
+    resetPlaybackStats();
     clearRenderCache();
     {
         std::lock_guard<std::mutex> glLock(glRendererMutex);
@@ -668,6 +677,71 @@ int64_t NativePlayer::getCurrentPositionMs() {
     }
 
     return clockUs / 1000;
+}
+
+/** 返回累计读取字节数。 */
+int64_t NativePlayer::getReadBytes() {
+    return totalReadBytes.load();
+}
+
+/** 返回最近一次计算出的读取速度，单位字节/秒。 */
+int64_t NativePlayer::getReadSpeedBytesPerSecond() {
+    return readSpeedBytesPerSecond.load();
+}
+
+/** 返回视频 packet 队列长度。 */
+int NativePlayer::getVideoPacketQueueSize() {
+    std::lock_guard<std::mutex> lock(packetQueueMutex);
+    return static_cast<int>(videoPacketQueue.size());
+}
+
+/** 返回音频 packet 队列长度。 */
+int NativePlayer::getAudioPacketQueueSize() {
+    std::lock_guard<std::mutex> lock(packetQueueMutex);
+    return static_cast<int>(audioPacketQueue.size());
+}
+
+/** 返回当前缓冲百分比估算值。 */
+int NativePlayer::getBufferedPercent() {
+    std::lock_guard<std::mutex> lock(packetQueueMutex);
+
+    int videoPercent = static_cast<int>(
+            std::min<size_t>(videoPacketQueue.size(), VIDEO_PACKET_QUEUE_MAX)
+            * 100 / VIDEO_PACKET_QUEUE_MAX
+    );
+
+    if (audioStreamIndex < 0) {
+        return videoPercent;
+    }
+
+    int audioPercent = static_cast<int>(
+            std::min<size_t>(audioPacketQueue.size(), AUDIO_PACKET_QUEUE_MAX)
+            * 100 / AUDIO_PACKET_QUEUE_MAX
+    );
+    return (videoPercent + audioPercent) / 2;
+}
+
+/** 返回平均视频解码帧率。 */
+double NativePlayer::getDecodeFps() {
+    int64_t frameCount = decodedFrameTotal.load();
+    if (frameCount <= 0) {
+        return 0.0;
+    }
+
+    auto now = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point startTime;
+    {
+        std::lock_guard<std::mutex> lock(speedMutex);
+        startTime = decodeFpsStartTime;
+    }
+    auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - startTime
+    ).count();
+    if (elapsedMs <= 0) {
+        return 0.0;
+    }
+
+    return static_cast<double>(frameCount) * 1000.0 / static_cast<double>(elapsedMs);
 }
 
 /** 原子复制最近一帧截图快照。 */
@@ -845,6 +919,7 @@ void NativePlayer::demuxLoop() {
             break;
         }
 
+        recordReadBytes(packet->size);
         writeRecordingPacket(packet);
 
         if (packet->stream_index == videoStreamIndex || packet->stream_index == audioStreamIndex) {
@@ -1038,6 +1113,7 @@ void NativePlayer::decodeLoop() {
             }
 
             decodedFrameCount++;
+            recordDecodedVideoFrame();
             if (!renderFrameWithSync(frame)) {
                 break;
             }
@@ -1056,6 +1132,7 @@ void NativePlayer::decodeLoop() {
             }
 
             decodedFrameCount++;
+            recordDecodedVideoFrame();
             if (!renderFrameWithSync(frame)) {
                 break;
             }
@@ -1184,6 +1261,7 @@ bool NativePlayer::tryMediaCodecDecodeLoop(
             }
             renderMediaCodecFrame(decodedFrame);
             decodedFrameCount++;
+            recordDecodedVideoFrame();
             std::this_thread::sleep_for(std::chrono::microseconds(frameDurationUs));
         } else if (status == MediaCodecVideoDecoder::Status::OUTPUT_FORMAT_CHANGED
                    || status == MediaCodecVideoDecoder::Status::OUTPUT_TRY_AGAIN) {
@@ -2111,6 +2189,46 @@ void NativePlayer::clearPacketQueues() {
     }
 
     packetQueueCond.notify_all();
+}
+
+/** 重置本轮播放统计数据。 */
+void NativePlayer::resetPlaybackStats() {
+    totalReadBytes = 0;
+    speedWindowBytes = 0;
+    readSpeedBytesPerSecond = 0;
+    decodedFrameTotal = 0;
+    std::lock_guard<std::mutex> lock(speedMutex);
+    lastSpeedTime = std::chrono::steady_clock::now();
+    decodeFpsStartTime = lastSpeedTime;
+}
+
+/** 记录一次成功读取的 packet 字节数。 */
+void NativePlayer::recordReadBytes(int packetSize) {
+    if (packetSize <= 0) {
+        return;
+    }
+
+    totalReadBytes.fetch_add(packetSize);
+    speedWindowBytes.fetch_add(packetSize);
+
+    std::lock_guard<std::mutex> lock(speedMutex);
+    auto now = std::chrono::steady_clock::now();
+    auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - lastSpeedTime
+    ).count();
+    if (elapsedMs < 1000) {
+        return;
+    }
+
+    int64_t windowBytes = speedWindowBytes.exchange(0);
+    int64_t speed = windowBytes * 1000 / std::max<int64_t>(elapsedMs, 1);
+    readSpeedBytesPerSecond = speed;
+    lastSpeedTime = now;
+}
+
+/** 记录一帧已经解码出的视频帧。 */
+void NativePlayer::recordDecodedVideoFrame() {
+    decodedFrameTotal.fetch_add(1);
 }
 
 /** 记录一个播放工作线程结束。 */

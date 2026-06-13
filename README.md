@@ -221,6 +221,18 @@ String decoderName = player.getCurrentDecoderName();            // ffmpeg-h264�
 String fallbackReason = player.getLastDecodeFallbackReason();   // 硬解失败回退原因
 ```
 
+读取播放统计：
+
+```java
+ECHPlayer.PlaybackStats stats = player.getPlaybackStats();
+long readBytes = stats.readBytes;                               // 累计读取字节数
+long speed = stats.readSpeedBytesPerSecond;                     // 当前读取速度，单位字节/秒
+int videoQueueSize = stats.videoPacketQueueSize;                // 视频 packet 队列长度
+int audioQueueSize = stats.audioPacketQueueSize;                // 音频 packet 队列长度
+int bufferedPercent = stats.bufferedPercent;                    // 缓冲百分比估算值
+double decodeFps = stats.decodeFps;                             // 平均视频解码 FPS
+```
+
 解码状态 info：
 
 1. `INFO_DECODE_MODE_CHANGED`：当前实际解码方式变化。
@@ -315,7 +327,7 @@ playerView.release();
 5. 解码模式：主页面和 PlayerView Demo 均可切换 `解码AUTO`、`软解`、`硬解`。
 6. 画面比例：PlayerView Demo 可切换 `fit`、`crop`、`fill`、`original`。
 
-主页面会展示播放器状态、协议类型、错误码、info 回调、缓冲事件、视频尺寸、渲染模式、目标解码模式、当前实际解码方式、解码器名称、硬解回退原因、截图路径、录制状态和录制文件路径。
+主页面会展示播放器状态、协议类型、错误码、info 回调、缓冲事件、视频尺寸、渲染模式、目标解码模式、当前实际解码方式、解码器名称、硬解回退原因、读取速度、累计读取字节、音视频队列长度、缓冲百分比、decode fps、重连次数、截图路径、录制状态和录制文件路径。
 
 ## ABI 状态
 

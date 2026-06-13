@@ -2,6 +2,7 @@
 #define ECHPLAY_NATIVE_PLAYER_H
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -77,6 +78,24 @@ public:
     /** 获取当前播放位置，单位毫秒。 */
     int64_t getCurrentPositionMs();
 
+    /** 获取累计读取字节数。 */
+    int64_t getReadBytes();
+
+    /** 获取最近一次计算出的读取速度，单位字节/秒。 */
+    int64_t getReadSpeedBytesPerSecond();
+
+    /** 获取视频 packet 队列长度。 */
+    int getVideoPacketQueueSize();
+
+    /** 获取音频 packet 队列长度。 */
+    int getAudioPacketQueueSize();
+
+    /** 获取当前缓冲百分比估算值。 */
+    int getBufferedPercent();
+
+    /** 获取平均视频解码帧率。 */
+    double getDecodeFps();
+
     /** 原子复制最近一帧解码快照。 */
     bool copyCurrentFrameSnapshot(
             std::vector<uint8_t> &rgbaData,
@@ -147,6 +166,20 @@ private:
     std::atomic<int> activePlaybackWorkers;
     /** 当前音频主时钟，单位微秒。 */
     std::atomic<int64_t> audioClockUs;
+    /** 累计从 FFmpeg 读取到的 packet 字节数。 */
+    std::atomic<int64_t> totalReadBytes;
+    /** 当前测速窗口内累计的 packet 字节数。 */
+    std::atomic<int64_t> speedWindowBytes;
+    /** 最近一次计算出的读取速度，单位字节/秒。 */
+    std::atomic<int64_t> readSpeedBytesPerSecond;
+    /** 读取速度统计窗口的起始时间。 */
+    std::chrono::steady_clock::time_point lastSpeedTime;
+    /** 读取速度统计互斥锁，避免多线程同时更新窗口时间。 */
+    std::mutex speedMutex;
+    /** 累计解码出的视频帧数。 */
+    std::atomic<int64_t> decodedFrameTotal;
+    /** 解码 FPS 统计起始时间。 */
+    std::chrono::steady_clock::time_point decodeFpsStartTime;
     /** Surface 渲染缩放方式，0 保持比例居中，1 拉伸填满。 */
     std::atomic<int> surfaceScaleType;
     /** 当前渲染模式，0 自动，1 OpenGL，2 NativeWindow。 */
@@ -336,6 +369,15 @@ private:
 
     /** 清空所有音视频包队列。 */
     void clearPacketQueues();
+
+    /** 重置本轮播放统计数据。 */
+    void resetPlaybackStats();
+
+    /** 记录一次成功读取的 packet 字节数。 */
+    void recordReadBytes(int packetSize);
+
+    /** 记录一帧已经解码出的视频帧。 */
+    void recordDecodedVideoFrame();
 
     /** 记录工作线程结束并更新播放状态。 */
     void markPlaybackWorkerFinished();

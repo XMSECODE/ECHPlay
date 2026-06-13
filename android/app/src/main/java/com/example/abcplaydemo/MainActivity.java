@@ -860,6 +860,7 @@ public class MainActivity extends AppCompatActivity {
 
         updateRecordButtonState();
         updateSeekableUi();
+        updateDecodeStatusUi();
     }
 
     /** 根据当前媒体能力更新 seek 进度条状态。 */
@@ -896,6 +897,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         String fallbackReason = player.getLastDecodeFallbackReason();
+        ECHPlayer.PlaybackStats stats = player.getPlaybackStats();
         StringBuilder builder = new StringBuilder();
         builder.append("目标解码：");
         builder.append(decodeModeToText(player.getDecodeMode()));
@@ -907,6 +909,21 @@ public class MainActivity extends AppCompatActivity {
             builder.append("  回退：");
             builder.append(fallbackReason);
         }
+        builder.append("\n速度：");
+        builder.append(formatByteSpeed(stats.readSpeedBytesPerSecond));
+        builder.append("  已读：");
+        builder.append(formatBytes(stats.readBytes));
+        builder.append("  队列 V/A：");
+        builder.append(stats.videoPacketQueueSize);
+        builder.append("/");
+        builder.append(stats.audioPacketQueueSize);
+        builder.append("  缓冲：");
+        builder.append(stats.bufferedPercent);
+        builder.append("%");
+        builder.append("  FPS：");
+        builder.append(String.format(Locale.US, "%.1f", stats.decodeFps));
+        builder.append("  重连：");
+        builder.append(player.getReconnectCount());
         decodeStatusText.setText(builder.toString());
     }
 
@@ -994,6 +1011,22 @@ public class MainActivity extends AppCompatActivity {
         long minutes = totalSeconds / 60;
         long seconds = totalSeconds % 60;
         return String.format(Locale.US, "%02d:%02d", minutes, seconds);
+    }
+
+    /** 把字节数格式化成易读文本。 */
+    private String formatBytes(long bytes) {
+        if (bytes < 1024L) {
+            return bytes + " B";
+        }
+        if (bytes < 1024L * 1024L) {
+            return String.format(Locale.US, "%.1f KB", bytes / 1024.0);
+        }
+        return String.format(Locale.US, "%.1f MB", bytes / 1024.0 / 1024.0);
+    }
+
+    /** 把字节每秒格式化成易读速度文本。 */
+    private String formatByteSpeed(long bytesPerSecond) {
+        return formatBytes(bytesPerSecond) + "/s";
     }
 
     /** 把 asset 中的测试文件复制到缓存目录。 */

@@ -295,6 +295,96 @@ Java_com_echplay_player_ECHPlayer_nativeGetCurrentPositionMs(
 }
 
 extern "C"
+JNIEXPORT jlong JNICALL
+Java_com_echplay_player_ECHPlayer_nativeGetReadBytes(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return 0;
+    }
+
+    return static_cast<jlong>(player->getReadBytes());
+}
+
+extern "C"
+JNIEXPORT jlong JNICALL
+Java_com_echplay_player_ECHPlayer_nativeGetReadSpeedBytesPerSecond(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return 0;
+    }
+
+    return static_cast<jlong>(player->getReadSpeedBytesPerSecond());
+}
+
+extern "C"
+JNIEXPORT jint JNICALL
+Java_com_echplay_player_ECHPlayer_nativeGetVideoPacketQueueSize(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return 0;
+    }
+
+    return static_cast<jint>(player->getVideoPacketQueueSize());
+}
+
+extern "C"
+JNIEXPORT jint JNICALL
+Java_com_echplay_player_ECHPlayer_nativeGetAudioPacketQueueSize(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return 0;
+    }
+
+    return static_cast<jint>(player->getAudioPacketQueueSize());
+}
+
+extern "C"
+JNIEXPORT jint JNICALL
+Java_com_echplay_player_ECHPlayer_nativeGetBufferedPercent(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return 0;
+    }
+
+    return static_cast<jint>(player->getBufferedPercent());
+}
+
+extern "C"
+JNIEXPORT jdouble JNICALL
+Java_com_echplay_player_ECHPlayer_nativeGetDecodeFps(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr) {
+        return 0.0;
+    }
+
+    return static_cast<jdouble>(player->getDecodeFps());
+}
+
+extern "C"
 JNIEXPORT jboolean JNICALL
 Java_com_echplay_player_ECHPlayer_nativeIsSeekable(
         JNIEnv *env,
