@@ -2,15 +2,19 @@ package com.echplay.player;
 
 import android.content.Context;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.AttributeSet;
 import android.view.Gravity;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.TextView;
 
 import java.io.File;
 import java.text.SimpleDateFormat;
@@ -36,10 +40,38 @@ public class ECHPlayerView extends LinearLayout {
     /** 录制输出子目录名。 */
     private static final String RECORD_DIR = "records";
 
+    /**
+     * PlayerView 内部状态，用于控制覆盖层显示。
+     */
+    private enum ViewState {
+        /** 等待设置地址或等待播放。 */
+        IDLE,
+        /** 正在准备或启动播放。 */
+        LOADING,
+        /** 播放中遇到缓冲。 */
+        BUFFERING,
+        /** 正在播放，覆盖层隐藏。 */
+        PLAYING,
+        /** 已暂停。 */
+        PAUSED,
+        /** 已停止。 */
+        STOPPED,
+        /** 播放出错。 */
+        ERROR,
+        /** 组件已经释放。 */
+        RELEASED
+    }
+
     /** 视频区域容器，用于承载 SurfaceView 并裁剪边缘。 */
     private final FrameLayout surfaceContainer;
     /** 视频渲染 SurfaceView。 */
     private final SurfaceView surfaceView;
+    /** 状态覆盖层，用于展示 loading、buffering、error 和 retry。 */
+    private final LinearLayout statusOverlay;
+    /** 状态文案。 */
+    private final TextView statusText;
+    /** 重试按钮。 */
+    private final Button retryButton;
     /** 播放按钮。 */
     private final Button startButton;
     /** 暂停按钮。 */
@@ -66,10 +98,16 @@ public class ECHPlayerView extends LinearLayout {
     private int renderMode = ECHPlayer.RENDER_MODE_AUTO;
     /** 当前解码模式。 */
     private int decodeMode = ECHPlayer.DECODE_MODE_AUTO;
+    /** 当前 PlayerView 状态。 */
+    private ViewState viewState = ViewState.IDLE;
+    /** 组件是否已释放，用于忽略旧回调。 */
+    private boolean released = false;
     /** 当前视频宽度。 */
     private int videoWidth = 0;
     /** 当前视频高度。 */
     private int videoHeight = 0;
+    /** 主线程 Handler，用于把播放器回调安全切回 UI 线程。 */
+    private final Handler uiHandler = new Handler(Looper.getMainLooper());
 
     /** 组件事件监听器，用于 Demo 展示日志。 */
     public interface EventListener {
@@ -106,6 +144,35 @@ public class ECHPlayerView extends LinearLayout {
                 Gravity.CENTER
         ));
 
+        statusOverlay = new LinearLayout(context);
+        statusOverlay.setOrientation(VERTICAL);
+        statusOverlay.setGravity(Gravity.CENTER);
+        statusOverlay.setPadding(dp(16), dp(16), dp(16), dp(16));
+        statusOverlay.setBackgroundColor(0x99000000);
+        surfaceContainer.addView(statusOverlay, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                Gravity.CENTER
+        ));
+
+        statusText = new TextView(context);
+        statusText.setTextColor(0xFFFFFFFF);
+        statusText.setTextSize(15f);
+        statusText.setGravity(Gravity.CENTER);
+        statusOverlay.addView(statusText, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+
+        retryButton = new Button(context);
+        retryButton.setText("重试");
+        LinearLayout.LayoutParams retryParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        retryParams.topMargin = dp(8);
+        statusOverlay.addView(retryButton, retryParams);
+
         LinearLayout controlsLayout = new LinearLayout(context);
         controlsLayout.setOrientation(HORIZONTAL);
         addView(controlsLayout, new LayoutParams(
@@ -121,6 +188,7 @@ public class ECHPlayerView extends LinearLayout {
 
         bindSurfaceCallback();
         bindControlActions();
+        updateViewState(ViewState.IDLE, "等待播放", false);
     }
 
     /** 设置组件事件监听器。 */
@@ -167,9 +235,11 @@ public class ECHPlayerView extends LinearLayout {
 
     /** 设置播放地址。 */
     public void setVideoPath(String path) {
+        released = false;
         videoPath = path == null ? "" : path.trim();
         if (videoPath.length() == 0) {
             emitEvent("PlayerView setVideoPath ignored: path is empty");
+            updateViewState(ViewState.IDLE, "请输入播放地址", false);
             return;
         }
 
@@ -181,11 +251,13 @@ public class ECHPlayerView extends LinearLayout {
         resetVideoSize();
         applyRenderModeToPlayer();
         applyDecodeModeToPlayer();
+        updateViewState(ViewState.IDLE, "点击播放开始", false);
 
         try {
             player.setDataSource(videoPath);
         } catch (RuntimeException e) {
             emitEvent("PlayerView setVideoPath failed: " + e.getMessage());
+            updateViewState(ViewState.ERROR, "设置地址失败\n" + e.getMessage(), true);
         }
     }
 
@@ -197,17 +269,21 @@ public class ECHPlayerView extends LinearLayout {
 
     /** 开始播放。 */
     public void start() {
+        released = false;
         ensurePlayer();
         if (!surfaceReady || currentSurface == null || !currentSurface.isValid()) {
             emitEvent("PlayerView start ignored: Surface not ready");
+            updateViewState(ViewState.IDLE, "Surface 未准备好", false);
             return;
         }
 
         if (videoPath.length() == 0) {
             emitEvent("PlayerView start ignored: videoPath is empty");
+            updateViewState(ViewState.IDLE, "请输入播放地址", false);
             return;
         }
 
+        updateViewState(ViewState.LOADING, "正在准备播放...", false);
         applySurfaceScaleTypeToPlayer();
         applyRenderModeToPlayer();
         applyDecodeModeToPlayer();
@@ -216,14 +292,17 @@ public class ECHPlayerView extends LinearLayout {
             String prepareResult = player.prepare();
             emitEvent(prepareResult);
             if (!player.isPrepared()) {
+                updateViewState(ViewState.ERROR, "播放准备失败\n" + prepareResult, true);
                 return;
             }
             updateVideoSizeFromPlayer();
         }
         try {
             emitEvent(player.start());
+            updateViewState(ViewState.PLAYING, "", false);
         } catch (IllegalStateException e) {
             emitEvent("PlayerView start ignored: " + e.getMessage());
+            updateViewState(ViewState.ERROR, "播放启动失败\n" + e.getMessage(), true);
         }
         updateRecordButtonState();
     }
@@ -234,6 +313,7 @@ public class ECHPlayerView extends LinearLayout {
             try {
                 player.pause();
                 emitEvent("PlayerView pause");
+                updateViewState(ViewState.PAUSED, "已暂停", false);
             } catch (IllegalStateException e) {
                 emitEvent("PlayerView pause ignored: " + e.getMessage());
             }
@@ -247,6 +327,7 @@ public class ECHPlayerView extends LinearLayout {
                 stopRecordingIfNeeded();
                 player.stop();
                 emitEvent("PlayerView stop");
+                updateViewState(ViewState.STOPPED, "已停止", false);
             } catch (IllegalStateException e) {
                 emitEvent("PlayerView stop ignored: " + e.getMessage());
             }
@@ -260,6 +341,8 @@ public class ECHPlayerView extends LinearLayout {
             stopRecordingIfNeeded();
             player.release();
             player = null;
+            released = true;
+            updateViewState(ViewState.RELEASED, "", false);
             updateRecordButtonState();
         }
     }
@@ -289,6 +372,7 @@ public class ECHPlayerView extends LinearLayout {
             public void surfaceCreated(SurfaceHolder holder) {
                 currentSurface = holder.getSurface();
                 surfaceReady = currentSurface != null && currentSurface.isValid();
+                released = false;
                 if (player != null && surfaceReady) {
                     player.setSurface(currentSurface);
                 }
@@ -310,6 +394,7 @@ public class ECHPlayerView extends LinearLayout {
             public void surfaceDestroyed(SurfaceHolder holder) {
                 surfaceReady = false;
                 currentSurface = null;
+                updateViewState(ViewState.IDLE, "Surface 已销毁", false);
                 if (player != null) {
                     try {
                         stopRecordingIfNeeded();
@@ -333,6 +418,70 @@ public class ECHPlayerView extends LinearLayout {
         stopButton.setOnClickListener(view -> stop());
         captureButton.setOnClickListener(view -> capture());
         recordButton.setOnClickListener(view -> toggleRecording());
+        retryButton.setOnClickListener(view -> retry());
+    }
+
+    /** 处理播放器 info 回调并刷新组件状态。 */
+    private void handlePlayerInfo(ECHPlayer targetPlayer, int infoCode, String message) {
+        if (released) {
+            return;
+        }
+
+        if (infoCode == ECHPlayer.INFO_PREPARE_STARTED) {
+            updateViewState(ViewState.LOADING, "正在准备播放...", false);
+        } else if (infoCode == ECHPlayer.INFO_BUFFERING_START) {
+            updateViewState(ViewState.BUFFERING, "正在缓冲...", false);
+        } else if (infoCode == ECHPlayer.INFO_BUFFERING_END
+                || infoCode == ECHPlayer.INFO_PLAY_STARTED
+                || infoCode == ECHPlayer.INFO_VIDEO_RENDERING_START) {
+            updateViewState(ViewState.PLAYING, "", false);
+        }
+
+        emitEvent("PlayerView info " + infoCode
+                + "\n" + message
+                + "\ncurrentDecode: " + targetPlayer.getCurrentDecodeType()
+                + "\ndecoder: " + targetPlayer.getCurrentDecoderName()
+                + "\nfallbackReason: " + targetPlayer.getLastDecodeFallbackReason());
+    }
+
+    /** 处理播放器错误并显示重试入口。 */
+    private void handlePlayerError(int errorCode, String message) {
+        if (released) {
+            return;
+        }
+
+        String safeMessage = message == null ? "" : message;
+        updateViewState(ViewState.ERROR, "播放出错\n错误码: " + errorCode + "\n" + safeMessage, true);
+        emitEvent("PlayerView error " + errorCode + "\n" + safeMessage);
+    }
+
+    /** 根据缓冲百分比刷新覆盖层。 */
+    private void handleBufferingPercent(int percent) {
+        if (released) {
+            return;
+        }
+
+        if (percent <= 0) {
+            updateViewState(ViewState.BUFFERING, "正在缓冲...", false);
+        } else if (percent >= 100 && viewState == ViewState.BUFFERING) {
+            updateViewState(ViewState.PLAYING, "", false);
+        }
+    }
+
+    /** 使用最近一次播放地址和配置重新播放。 */
+    private void retry() {
+        if (released) {
+            released = false;
+        }
+        if (videoPath.length() == 0) {
+            updateViewState(ViewState.IDLE, "请输入播放地址", false);
+            emitEvent("PlayerView retry ignored: videoPath is empty");
+            return;
+        }
+
+        emitEvent("PlayerView retry");
+        setVideoPath(videoPath);
+        start();
     }
 
     /** 确保播放器实例存在。 */
@@ -343,20 +492,22 @@ public class ECHPlayerView extends LinearLayout {
 
         player = new ECHPlayer();
         player.setOnInfoListener((targetPlayer, infoCode, message) -> {
-            emitEvent("PlayerView info " + infoCode
-                    + "\n" + message
-                    + "\ncurrentDecode: " + targetPlayer.getCurrentDecodeType()
-                    + "\ndecoder: " + targetPlayer.getCurrentDecoderName()
-                    + "\nfallbackReason: " + targetPlayer.getLastDecodeFallbackReason());
+            postToUi(() -> handlePlayerInfo(targetPlayer, infoCode, message));
             return true;
         });
         player.setOnErrorListener((targetPlayer, errorCode, message) -> {
-            emitEvent("PlayerView error " + errorCode + "\n" + message);
+            postToUi(() -> handlePlayerError(errorCode, message));
             return true;
         });
+        player.setOnCompletionListener(targetPlayer ->
+                postToUi(() -> updateViewState(ViewState.STOPPED, "播放完成", false)));
+        player.setOnBufferingUpdateListener((targetPlayer, percent) ->
+                postToUi(() -> handleBufferingPercent(percent)));
         player.setOnVideoSizeChangedListener((targetPlayer, width, height) -> {
-            updateVideoSize(width, height);
-            emitEvent("PlayerView video size: " + width + "x" + height);
+            postToUi(() -> {
+                updateVideoSize(width, height);
+                emitEvent("PlayerView video size: " + width + "x" + height);
+            });
         });
         applySurfaceScaleTypeToPlayer();
         applyRenderModeToPlayer();
@@ -604,6 +755,61 @@ public class ECHPlayerView extends LinearLayout {
         } else {
             recordButton.setText("录制");
         }
+    }
+
+    /** 更新 PlayerView 状态覆盖层。 */
+    private void updateViewState(ViewState state, String message, boolean showRetry) {
+        viewState = state;
+        String safeMessage = message == null ? "" : message;
+
+        if (state == ViewState.PLAYING || state == ViewState.RELEASED) {
+            statusOverlay.setVisibility(View.GONE);
+            retryButton.setVisibility(View.GONE);
+            statusText.setText("");
+            return;
+        }
+
+        if (safeMessage.length() == 0) {
+            safeMessage = defaultMessageForState(state);
+        }
+
+        statusText.setText(safeMessage);
+        retryButton.setVisibility(showRetry ? View.VISIBLE : View.GONE);
+        statusOverlay.setVisibility(View.VISIBLE);
+    }
+
+    /** 返回状态默认文案。 */
+    private String defaultMessageForState(ViewState state) {
+        if (state == ViewState.LOADING) {
+            return "正在准备播放...";
+        }
+        if (state == ViewState.BUFFERING) {
+            return "正在缓冲...";
+        }
+        if (state == ViewState.ERROR) {
+            return "播放出错";
+        }
+        if (state == ViewState.PAUSED) {
+            return "已暂停";
+        }
+        if (state == ViewState.STOPPED) {
+            return "已停止";
+        }
+        return "等待播放";
+    }
+
+    /** 把任务切回主线程执行。 */
+    private void postToUi(Runnable action) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            action.run();
+        } else {
+            uiHandler.post(action);
+        }
+    }
+
+    /** 把 dp 转换成像素。 */
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
     /** 生成组件输出文件。 */

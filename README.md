@@ -294,6 +294,13 @@ playerView.setScaleType(ECHPlayerView.SCALE_TYPE_FIT_CENTER);
 playerView.start();
 ```
 
+`ECHPlayerView` 内置基础状态覆盖层：
+
+1. 播放准备阶段显示 `loading` 文案。
+2. 缓冲开始时显示 `buffering` 文案，缓冲结束后自动隐藏。
+3. 播放错误时显示错误码和错误信息。
+4. 错误状态提供 `重试` 按钮，会复用最近一次 `videoPath`、渲染模式、解码模式和 RTSP 传输方式重新播放。
+
 画面比例模式：
 
 ```java
