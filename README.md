@@ -1,6 +1,6 @@
 # ECHPlay
 
-ECHPlay 是一个基于 FFmpeg 和 Android MediaCodec 的 Android 播放器项目。v1.4 的重点是补齐硬解能力：在 v1.3 OpenGL ES、YUV420P 三纹理、渲染模式切换、视频尺寸回调和 `ECHPlayerView` 画面比例控制基础上，新增 H.264 / H.265 MediaCodec 硬解、软硬解切换、失败回退和当前解码方式展示。
+ECHPlay 是一个基于 FFmpeg 和 Android MediaCodec 的 Android 播放器项目。v1.4 已补齐硬解能力：在 v1.3 OpenGL ES、YUV420P 三纹理、渲染模式切换、视频尺寸回调和 `ECHPlayerView` 画面比例控制基础上，新增 H.264 / H.265 MediaCodec 硬解、软硬解切换、失败回退和当前解码方式展示。v1.5 进入网络播放稳定性和可观测性阶段，重点推进 HTTP / HTTPS / HLS / RTSP 验证、RTSP 自动重连、播放统计和 PlayerView 基础状态。
 
 ## v1.4 能力
 
@@ -21,6 +21,38 @@ ECHPlay 是一个基于 FFmpeg 和 Android MediaCodec 的 Android 播放器项�
 15. MediaCodec：支持 H.264 / H.265 的硬解基础路径。
 16. 失败回退：硬解不可用、输出格式不支持或送取帧失败时会回退 FFmpeg 软解。
 17. 状态展示：Java API 和 Demo 可查看目标解码模式、当前实际解码方式、解码器名称和回退原因。
+
+## v1.5 目标（开发中）
+
+v1.5 的目标不是一次性追平 ijkplayer 的全部协议和弱网经验，而是先建立“可播放、可诊断、可恢复、可验证”的网络播放闭环。
+
+核心目标：
+
+1. 验证 HTTP / HTTPS MP4 的播放、暂停、恢复、seek 和错误提示。
+2. 验证 HLS / m3u8 的基础播放能力，并记录直播流 seek 边界。
+3. 使用真实 RTSP 摄像头或稳定 RTSP server 验证 TCP / UDP 两种传输方式。
+4. 增加 RTSP 断流自动重连开关、重试次数、重试间隔和重连 info 回调。
+5. 增加网速、累计读取字节数、缓冲比例、队列长度、首开耗时、首帧耗时和 decode fps 等基础统计。
+6. Demo 展示协议类型、网络状态、重连次数、统计信息和错误原因。
+7. `ECHPlayerView` 增加 loading、buffering、error、retry 基础状态。
+8. 维护协议能力表和 v1.5 验证报告，避免把“代码路径存在”误标成“实测通过”。
+
+协议能力表：
+
+| 协议 | 当前代码路径 | v1.5 目标 | 当前验证状态 | 说明 |
+| --- | --- | --- | --- | --- |
+| 本地文件 | 已支持 | 回归验证 | v1.4 已验证 | v1.5 需要确保不退化 |
+| RTSP TCP | 已支持入口 | 真实源验证、断流重连 | 待验证 | 需要真实摄像头或稳定 RTSP server |
+| RTSP UDP | 已支持入口 | 真实源验证、断流重连 | 待验证 | 需要同一测试源对比 TCP / UDP |
+| HTTP MP4 | FFmpeg 可能支持 | 播放、seek、错误诊断 | 待验证 | 建议使用本机 HTTP server 或稳定公网源 |
+| HTTPS MP4 | FFmpeg 可能支持 | 播放、seek、错误诊断 | 待验证 | 需要记录证书和 FFmpeg TLS 兼容性 |
+| HLS VOD | FFmpeg 可能支持 | m3u8 基础播放 | 待验证 | v1.5 不承诺加密、多码率切换和字幕 |
+| HLS Live | FFmpeg 可能支持 | 播放或明确错误 | 待验证 | 直播流 seek 预期可能不支持 |
+
+v1.5 文档：
+
+1. `v1.5_requirements_goals.md`：v1.5 目标拆解和验收标准。
+2. `v1.5_validation_report.md`：v1.5 协议、构建、统计和回归验证记录。
 
 ## 快速运行 Demo
 
@@ -362,7 +394,7 @@ android/echplayer/src/main/jniLibs/arm64-v8a
 
 ## 后续方向
 
-1. 后续版本：自动重连和更完整的网络流协议兼容。
-2. 后续版本：字幕、多音轨和更多像素格式渲染兼容。
+1. v1.5：网络协议验证、RTSP 自动重连、播放统计、PlayerView 基础状态和验证报告。
+2. v1.6：字幕、多音轨、更多像素格式渲染兼容和更完整的媒体信息面板。
 3. 后续版本：SurfaceTexture / Surface 零拷贝硬解渲染路径。
 4. 后续版本：更完整的机型黑名单 / 白名单和性能统计面板。
