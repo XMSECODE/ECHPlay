@@ -76,6 +76,14 @@ v1.7 文档：
 1. `v1.7_requirements_goals.md`：v1.7 PlayerView 体验增强目标拆解。
 2. `v1.7_validation_report.md`：v1.7 构建和功能验收记录。
 
+v1.8 测试和发版文档：
+
+1. `v1.8_requirements_goals.md`：v1.8 测试体系和稳定性文档目标拆解。
+2. `v1.8_validation_report.md`：v1.8 smoke 检查和版本汇总报告。
+3. `compatibility_matrix.md`：ABI、协议、编码、解码和核心功能兼容性矩阵。
+4. `release_checklist.md`：发版前可勾选检查清单。
+5. `android/tools/smoke_check.sh`：构建、产物和可选 adb 安装启动 smoke 脚本。
+
 ## 快速运行 Demo
 
 ```bash
@@ -90,6 +98,17 @@ android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
 当前仓库可直接运行的 ABI 是 `arm64-v8a`，请优先使用 arm64 真机或模拟器。
+
+## Smoke 检查
+
+发版前建议执行：
+
+```bash
+cd android
+./tools/smoke_check.sh
+```
+
+脚本会构建 Debug / Release AAR 和 Demo Debug APK，检查 AAR / APK 产物与 arm64-v8a native so。若本机存在 adb 设备，脚本还会安装并启动 Demo；没有设备时会跳过安装启动，不影响基础 smoke 结果。
 
 ## 作为 Module 集成
 
