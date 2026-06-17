@@ -8,6 +8,7 @@
 #include <deque>
 #include <jni.h>
 #include <mutex>
+#include <map>
 #include <string>
 #include <thread>
 #include <vector>
@@ -53,6 +54,9 @@ public:
 
     /** 设置 long 类型播放器选项。 */
     bool setLongOption(int category, const std::string &name, int64_t value);
+
+    /** 设置 String 类型播放器选项。 */
+    bool setStringOption(int category, const std::string &name, const std::string &value);
 
     /** 打开数据源并读取流信息。 */
     std::string prepare();
@@ -279,6 +283,10 @@ private:
     int64_t inputBufferSize;
     /** RTSP 最大延迟，单位微秒。 */
     int64_t maxDelayUs;
+    /** 字符串输入 option，例如 headers、user_agent、protocol_whitelist。 */
+    std::map<std::string, std::string> stringOptions;
+    /** 字符串输入 option 互斥锁。 */
+    std::mutex optionMutex;
     /** 当前媒体是否支持 seek。 */
     bool seekable;
     /** 视频尺寸互斥锁。 */

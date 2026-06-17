@@ -291,6 +291,29 @@ bool NativePlayer::setLongOption(int category, const std::string &name, int64_t 
     return false;
 }
 
+/** 设置 String 类型播放器选项。 */
+bool NativePlayer::setStringOption(int category, const std::string &name, const std::string &value) {
+    (void) category;
+
+    if (name.empty()) {
+        return false;
+    }
+
+    if (name == "headers"
+            || name == "user_agent"
+            || name == "protocol_whitelist") {
+        std::lock_guard<std::mutex> optionLock(optionMutex);
+        if (value.empty()) {
+            stringOptions.erase(name);
+        } else {
+            stringOptions[name] = value;
+        }
+        return true;
+    }
+
+    return false;
+}
+
 /** 打开输入流并读取音视频信息。 */
 std::string NativePlayer::prepare() {
     if (dataSource.empty()) {
@@ -320,6 +343,12 @@ std::string NativePlayer::prepare() {
                 0
         );
         av_dict_set(&options, "max_delay", std::to_string(maxDelayUs).c_str(), 0);
+    }
+    {
+        std::lock_guard<std::mutex> optionLock(optionMutex);
+        for (const auto &entry : stringOptions) {
+            av_dict_set(&options, entry.first.c_str(), entry.second.c_str(), 0);
+        }
     }
 
     int ret = avformat_open_input(&formatContext, dataSource.c_str(), nullptr, &options);

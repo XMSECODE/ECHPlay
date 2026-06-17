@@ -1,12 +1,16 @@
 package com.echplay.player;
 
+import android.content.Context;
 import android.graphics.Bitmap;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioTrack;
+import android.net.Uri;
 import android.view.Surface;
+import android.view.SurfaceHolder;
 
 import java.io.File;
+import java.io.FileDescriptor;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -19,7 +23,7 @@ import java.util.Map;
 /**
  * Java 层播放器封装，负责桥接 UI 与 NativePlayer。
  */
-public class ECHPlayer implements AutoCloseable {
+public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
 
     /**
      * 播放器状态机，命名对齐 Android MediaPlayer 的常见生命周期。
@@ -344,6 +348,18 @@ public class ECHPlayer implements AutoCloseable {
         void onVideoSizeChanged(ECHPlayer player, int width, int height);
     }
 
+    /** seek 完成监听器。 */
+    public interface OnSeekCompleteListener {
+        /** seek 成功完成时回调。 */
+        void onSeekComplete(ECHPlayer player);
+    }
+
+    /** 字幕文本监听器，v1.9 先提供接口占位，真实字幕解码在后续版本补齐。 */
+    public interface OnTimedTextListener {
+        /** 收到字幕文本时回调。 */
+        void onTimedText(ECHPlayer player, ECHTimedText text);
+    }
+
     /** RTSP 走 TCP 传输。 */
     public static final int RTSP_TRANSPORT_TCP = 0;
     /** RTSP 走 UDP 传输。 */
@@ -370,6 +386,12 @@ public class ECHPlayer implements AutoCloseable {
     public static final int OPTION_CATEGORY_PLAYER = 2;
     /** RTSP 传输方式 option 名称。 */
     public static final String OPTION_RTSP_TRANSPORT = "rtsp_transport";
+    /** HTTP headers option 名称。 */
+    public static final String OPTION_HEADERS = "headers";
+    /** 协议白名单 option 名称。 */
+    public static final String OPTION_PROTOCOL_WHITELIST = "protocol_whitelist";
+    /** User-Agent option 名称。 */
+    public static final String OPTION_USER_AGENT = "user_agent";
     /** 渲染模式 option 名称。 */
     public static final String OPTION_RENDER_MODE = "render_mode";
     /** 解码模式 option 名称。 */
@@ -451,6 +473,12 @@ public class ECHPlayer implements AutoCloseable {
     private OnBufferingUpdateListener onBufferingUpdateListener;
     /** 视频尺寸变化监听器。 */
     private OnVideoSizeChangedListener onVideoSizeChangedListener;
+    /** seek 完成监听器。 */
+    private OnSeekCompleteListener onSeekCompleteListener;
+    /** 字幕文本监听器。 */
+    private OnTimedTextListener onTimedTextListener;
+    /** 当前显示目标 SurfaceHolder。 */
+    private SurfaceHolder displayHolder;
     /** 当前视频宽度。 */
     private int videoWidth = 0;
     /** 当前视频高度。 */
@@ -469,6 +497,14 @@ public class ECHPlayer implements AutoCloseable {
     private String lastRecordingPath = "";
     /** 最近一次设置的数据源。 */
     private String currentDataSource = "";
+    /** 最近一次设置数据源时附带的 headers。 */
+    private final Map<String, String> currentDataSourceHeaders = new HashMap<>();
+    /** 左声道音量，范围 0 到 1。 */
+    private float leftVolume = 1.0f;
+    /** 右声道音量，范围 0 到 1。 */
+    private float rightVolume = 1.0f;
+    /** 是否循环播放。 */
+    private boolean looping = false;
     /** 是否开启自动重连。 */
     private boolean reconnectEnabled = false;
     /** 自动重连最大次数。 */
@@ -528,8 +564,23 @@ public class ECHPlayer implements AutoCloseable {
         onVideoSizeChangedListener = listener;
     }
 
+    /** 设置 seek 完成监听器。 */
+    public synchronized void setOnSeekCompleteListener(OnSeekCompleteListener listener) {
+        onSeekCompleteListener = listener;
+    }
+
+    /** 设置字幕文本监听器。 */
+    public synchronized void setOnTimedTextListener(OnTimedTextListener listener) {
+        onTimedTextListener = listener;
+    }
+
     /** 设置播放数据源。 */
     public synchronized void setDataSource(String dataSource) {
+        setDataSource(dataSource, null);
+    }
+
+    /** 设置带 headers 的播放数据源。 */
+    public synchronized void setDataSource(String dataSource, Map<String, String> headers) {
         checkReleased();
         requireState(State.IDLE, State.STOPPED, State.ERROR);
 
@@ -538,6 +589,7 @@ public class ECHPlayer implements AutoCloseable {
         }
 
         nativeSetDataSource(nativeHandle, dataSource);
+        applyDataSourceHeaders(headers);
         currentDataSource = dataSource;
         state = State.INITIALIZED;
         prepared = false;
@@ -548,6 +600,43 @@ public class ECHPlayer implements AutoCloseable {
         resetPlaybackTiming();
         resetVideoSize();
         resetPlaybackEventFlags();
+    }
+
+    /** 设置 Uri 播放数据源。 */
+    public synchronized void setDataSource(Context context, Uri uri) {
+        setDataSource(context, uri, null);
+    }
+
+    /** 设置带 headers 的 Uri 播放数据源。 */
+    public synchronized void setDataSource(Context context, Uri uri, Map<String, String> headers) {
+        if (uri == null) {
+            throw new IllegalArgumentException("uri is null");
+        }
+
+        String resolvedSource = resolveUriDataSource(context, uri);
+        setDataSource(resolvedSource, headers);
+    }
+
+    /** 设置文件描述符播放数据源，完整 Native FD 播放将在 v2.1 补齐。 */
+    public synchronized void setDataSource(FileDescriptor fd) {
+        if (fd == null) {
+            throw new IllegalArgumentException("fd is null");
+        }
+        throw new UnsupportedOperationException(
+                "FileDescriptor data source will be implemented in v2.1"
+        );
+    }
+
+    /** 返回最近一次设置的数据源。 */
+    public synchronized String getDataSource() {
+        return currentDataSource;
+    }
+
+    /** 使用 SurfaceHolder 设置视频输出目标。 */
+    public synchronized void setDisplay(SurfaceHolder holder) {
+        checkReleased();
+        displayHolder = holder;
+        setSurface(holder == null ? null : holder.getSurface());
     }
 
     /** 设置视频输出 Surface。 */
@@ -745,6 +834,11 @@ public class ECHPlayer implements AutoCloseable {
             setReconnectEnabled(enable);
             return true;
         }
+        if (OPTION_HEADERS.equals(name)
+                || OPTION_USER_AGENT.equals(name)
+                || OPTION_PROTOCOL_WHITELIST.equals(name)) {
+            return nativeSetStringOption(nativeHandle, category, name, value == null ? "" : value);
+        }
 
         try {
             return setOption(category, name, Long.parseLong(value));
@@ -939,6 +1033,11 @@ public class ECHPlayer implements AutoCloseable {
         recordingState = RecordingState.IDLE;
         lastRecordingPath = "";
         currentDataSource = "";
+        currentDataSourceHeaders.clear();
+        displayHolder = null;
+        leftVolume = 1.0f;
+        rightVolume = 1.0f;
+        looping = false;
         reconnectCount = 0;
         reconnecting = false;
         resetPlaybackTiming();
@@ -976,6 +1075,7 @@ public class ECHPlayer implements AutoCloseable {
             state = wasPlaying ? State.STARTED : (wasPaused ? State.PAUSED : State.PREPARED);
             completionDispatched = false;
             dispatchInfo(INFO_SEEK_COMPLETE, result);
+            dispatchSeekComplete();
         } else {
             playing = wasPlaying;
             paused = wasPaused;
@@ -1032,6 +1132,25 @@ public class ECHPlayer implements AutoCloseable {
     /** 返回当前媒体是否支持 seek。 */
     public synchronized boolean isSeekable() {
         return !released && nativeIsSeekable(nativeHandle);
+    }
+
+    /** 设置左右声道音量，范围建议为 0 到 1。 */
+    public synchronized void setVolume(float leftVolume, float rightVolume) {
+        checkReleased();
+        this.leftVolume = normalizeVolume(leftVolume);
+        this.rightVolume = normalizeVolume(rightVolume);
+        applyAudioTrackVolume();
+    }
+
+    /** 设置是否循环播放。 */
+    public synchronized void setLooping(boolean looping) {
+        checkReleased();
+        this.looping = looping;
+    }
+
+    /** 返回是否循环播放。 */
+    public synchronized boolean isLooping() {
+        return looping;
     }
 
     /** 获取当前视频宽度。 */
@@ -1241,6 +1360,7 @@ public class ECHPlayer implements AutoCloseable {
                 AudioTrack.MODE_STREAM
         );
 
+        applyAudioTrackVolume();
         audioTrack.play();
         if (!audioRenderingStarted) {
             audioRenderingStarted = true;
@@ -1352,6 +1472,10 @@ public class ECHPlayer implements AutoCloseable {
             return;
         }
 
+        if (looping && tryRestartLoopingPlayback()) {
+            return;
+        }
+
         completionDispatched = true;
         state = State.COMPLETED;
         playing = false;
@@ -1359,6 +1483,49 @@ public class ECHPlayer implements AutoCloseable {
         if (onCompletionListener != null) {
             onCompletionListener.onCompletion(this);
         }
+    }
+
+    /** 分发 seek 完成回调。 */
+    private void dispatchSeekComplete() {
+        if (onSeekCompleteListener != null) {
+            onSeekCompleteListener.onSeekComplete(this);
+        }
+    }
+
+    /** 预留字幕文本分发入口，真实字幕解码在 v2.5 接入。 */
+    @SuppressWarnings("unused")
+    private void dispatchTimedText(ECHTimedText text) {
+        if (onTimedTextListener != null) {
+            onTimedTextListener.onTimedText(this, text);
+        }
+    }
+
+    /** 循环播放时尝试回到开头并重新启动播放。 */
+    private boolean tryRestartLoopingPlayback() {
+        if (!nativeIsSeekable(nativeHandle)) {
+            return false;
+        }
+
+        String seekResult = nativeSeekToMs(nativeHandle, 0L);
+        if (seekResult == null || !seekResult.startsWith("seek success")) {
+            return false;
+        }
+
+        dispatchInfo(INFO_SEEK_COMPLETE, seekResult);
+        dispatchSeekComplete();
+        markStartRequested();
+        String startResult = nativePlay(nativeHandle);
+        if (startResult != null
+                && (startResult.startsWith("play started")
+                || startResult.startsWith("play ignored"))) {
+            playing = true;
+            paused = false;
+            state = State.STARTED;
+            completionDispatched = false;
+            dispatchInfo(INFO_PLAY_STARTED, "loop restart\n" + startResult);
+            return true;
+        }
+        return false;
     }
 
     /** 分发缓冲进度回调。 */
@@ -1617,6 +1784,9 @@ public class ECHPlayer implements AutoCloseable {
 
     /** 根据字符串解析解码模式。 */
     private int decodeModeFromText(String value) {
+        if (value == null) {
+            return DECODE_MODE_AUTO;
+        }
         if (OPTION_VALUE_DECODE_SOFTWARE.equalsIgnoreCase(value)) {
             return DECODE_MODE_SOFTWARE;
         }
@@ -1626,6 +1796,84 @@ public class ECHPlayer implements AutoCloseable {
             return DECODE_MODE_MEDIACODEC;
         }
         return DECODE_MODE_AUTO;
+    }
+
+    /** 根据 Uri 解析现阶段可直接交给 FFmpeg 的数据源。 */
+    private String resolveUriDataSource(Context context, Uri uri) {
+        // v2.1 会使用 context 打开 content:// 和 FileDescriptor 数据源。
+        String scheme = uri.getScheme();
+        if (scheme == null || scheme.length() == 0) {
+            String path = uri.getPath();
+            if (path == null || path.length() == 0) {
+                throw new IllegalArgumentException("uri path is empty");
+            }
+            return path;
+        }
+
+        if ("file".equalsIgnoreCase(scheme)) {
+            String path = uri.getPath();
+            if (path == null || path.length() == 0) {
+                throw new IllegalArgumentException("file uri path is empty");
+            }
+            return path;
+        }
+
+        if ("http".equalsIgnoreCase(scheme)
+                || "https".equalsIgnoreCase(scheme)
+                || "rtsp".equalsIgnoreCase(scheme)) {
+            return uri.toString();
+        }
+
+        if ("content".equalsIgnoreCase(scheme)) {
+            throw new UnsupportedOperationException(
+                    "content Uri data source will be implemented in v2.1"
+            );
+        }
+
+        return uri.toString();
+    }
+
+    /** 保存并下发当前数据源 headers。 */
+    private void applyDataSourceHeaders(Map<String, String> headers) {
+        currentDataSourceHeaders.clear();
+        if (headers == null || headers.isEmpty()) {
+            nativeSetStringOption(nativeHandle, OPTION_CATEGORY_FORMAT, OPTION_HEADERS, "");
+            return;
+        }
+
+        currentDataSourceHeaders.putAll(headers);
+        String headerText = buildFfmpegHeaders(headers);
+        nativeSetStringOption(nativeHandle, OPTION_CATEGORY_FORMAT, OPTION_HEADERS, headerText);
+    }
+
+    /** 把 headers Map 转为 FFmpeg 需要的多行 Header 文本。 */
+    private String buildFfmpegHeaders(Map<String, String> headers) {
+        StringBuilder builder = new StringBuilder();
+        for (Map.Entry<String, String> entry : headers.entrySet()) {
+            String key = entry.getKey();
+            String value = entry.getValue();
+            if (key == null || key.length() == 0 || value == null) {
+                continue;
+            }
+            builder.append(key).append(": ").append(value).append("\r\n");
+        }
+        return builder.toString();
+    }
+
+    /** 把外部音量归一化到 AudioTrack 可接受的范围。 */
+    private float normalizeVolume(float volume) {
+        if (Float.isNaN(volume)) {
+            return 1.0f;
+        }
+        return Math.max(0.0f, Math.min(1.0f, volume));
+    }
+
+    /** 把当前音量应用到 AudioTrack。 */
+    private void applyAudioTrackVolume() {
+        if (audioTrack == null) {
+            return;
+        }
+        audioTrack.setStereoVolume(leftVolume, rightVolume);
     }
 
     /** 从 native 刷新当前实际解码信息。 */
@@ -1887,6 +2135,14 @@ public class ECHPlayer implements AutoCloseable {
 
     /** 设置 NativePlayer 的 long 类型 option。 */
     private native boolean nativeSetLongOption(long nativeHandle, int category, String name, long value);
+
+    /** 设置 NativePlayer 的 String 类型 option。 */
+    private native boolean nativeSetStringOption(
+            long nativeHandle,
+            int category,
+            String name,
+            String value
+    );
 
     /** 调用 NativePlayer.prepare。 */
     private native String nativePrepare(long nativeHandle);

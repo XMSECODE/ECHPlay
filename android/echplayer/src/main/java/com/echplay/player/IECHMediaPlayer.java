@@ -1,0 +1,117 @@
+package com.echplay.player;
+
+import android.content.Context;
+import android.net.Uri;
+import android.view.Surface;
+import android.view.SurfaceHolder;
+
+import java.io.FileDescriptor;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * MediaPlayer 风格播放器接口，用于让 ECHPlayer 的接入方式接近 ijkplayer。
+ */
+public interface IECHMediaPlayer {
+    /** 使用 SurfaceHolder 设置视频显示目标。 */
+    void setDisplay(SurfaceHolder holder);
+
+    /** 使用 Surface 设置视频显示目标。 */
+    void setSurface(Surface surface);
+
+    /** 设置字符串数据源。 */
+    void setDataSource(String dataSource);
+
+    /** 设置带 headers 的字符串数据源。 */
+    void setDataSource(String dataSource, Map<String, String> headers);
+
+    /** 设置 Uri 数据源。 */
+    void setDataSource(Context context, Uri uri);
+
+    /** 设置带 headers 的 Uri 数据源。 */
+    void setDataSource(Context context, Uri uri, Map<String, String> headers);
+
+    /** 设置文件描述符数据源。 */
+    void setDataSource(FileDescriptor fd);
+
+    /** 返回最近设置的数据源。 */
+    String getDataSource();
+
+    /** 同步准备播放器。 */
+    String prepare();
+
+    /** 异步准备播放器。 */
+    void prepareAsync();
+
+    /** 开始或恢复播放。 */
+    String start();
+
+    /** 暂停播放。 */
+    void pause();
+
+    /** 停止播放。 */
+    void stop();
+
+    /** 重置播放器。 */
+    void reset();
+
+    /** 释放播放器。 */
+    void release();
+
+    /** 跳转到指定毫秒位置。 */
+    String seekTo(long positionMs);
+
+    /** 返回总时长，单位毫秒。 */
+    long getDuration();
+
+    /** 返回当前播放位置，单位毫秒。 */
+    long getCurrentPosition();
+
+    /** 返回当前是否正在播放。 */
+    boolean isPlaying();
+
+    /** 设置左右声道音量，范围建议为 0 到 1。 */
+    void setVolume(float leftVolume, float rightVolume);
+
+    /** 设置是否循环播放。 */
+    void setLooping(boolean looping);
+
+    /** 返回是否循环播放。 */
+    boolean isLooping();
+
+    /** 返回视频宽度。 */
+    int getVideoWidth();
+
+    /** 返回视频高度。 */
+    int getVideoHeight();
+
+    /** 返回媒体信息。 */
+    ECHPlayer.MediaInfo getMediaInfo();
+
+    /** 返回轨道信息列表。 */
+    List<ECHPlayer.TrackInfo> getTrackInfo();
+
+    /** 设置准备完成监听器。 */
+    void setOnPreparedListener(ECHPlayer.OnPreparedListener listener);
+
+    /** 设置播放完成监听器。 */
+    void setOnCompletionListener(ECHPlayer.OnCompletionListener listener);
+
+    /** 设置错误监听器。 */
+    void setOnErrorListener(ECHPlayer.OnErrorListener listener);
+
+    /** 设置信息监听器。 */
+    void setOnInfoListener(ECHPlayer.OnInfoListener listener);
+
+    /** 设置缓冲进度监听器。 */
+    void setOnBufferingUpdateListener(ECHPlayer.OnBufferingUpdateListener listener);
+
+    /** 设置视频尺寸变化监听器。 */
+    void setOnVideoSizeChangedListener(ECHPlayer.OnVideoSizeChangedListener listener);
+
+    /** 设置 seek 完成监听器。 */
+    void setOnSeekCompleteListener(ECHPlayer.OnSeekCompleteListener listener);
+
+    /** 设置字幕文本监听器。 */
+    void setOnTimedTextListener(ECHPlayer.OnTimedTextListener listener);
+}

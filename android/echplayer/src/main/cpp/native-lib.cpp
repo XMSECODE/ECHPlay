@@ -177,6 +177,45 @@ Java_com_echplay_player_ECHPlayer_nativeSetLongOption(
 }
 
 extern "C"
+JNIEXPORT jboolean JNICALL
+Java_com_echplay_player_ECHPlayer_nativeSetStringOption(
+        JNIEnv *env,
+        jobject thiz,
+        jlong nativeHandle,
+        jint category,
+        jstring name,
+        jstring value) {
+
+    NativePlayer *player = getPlayer(nativeHandle);
+    if (player == nullptr || name == nullptr) {
+        return JNI_FALSE;
+    }
+
+    const char *nameChars = env->GetStringUTFChars(name, nullptr);
+    if (nameChars == nullptr) {
+        return JNI_FALSE;
+    }
+
+    std::string valueText;
+    if (value != nullptr) {
+        const char *valueChars = env->GetStringUTFChars(value, nullptr);
+        if (valueChars != nullptr) {
+            valueText = valueChars;
+            env->ReleaseStringUTFChars(value, valueChars);
+        }
+    }
+
+    bool handled = player->setStringOption(
+            static_cast<int>(category),
+            nameChars,
+            valueText
+    );
+
+    env->ReleaseStringUTFChars(name, nameChars);
+    return handled ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C"
 JNIEXPORT jstring JNICALL
 Java_com_echplay_player_ECHPlayer_nativePrepare(
         JNIEnv *env,
