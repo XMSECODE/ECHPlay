@@ -88,8 +88,23 @@ public interface IECHMediaPlayer {
     /** 返回媒体信息。 */
     ECHPlayer.MediaInfo getMediaInfo();
 
+    /** 返回媒体元信息。 */
+    ECHPlayer.MediaMeta getMediaMeta();
+
     /** 返回轨道信息列表。 */
     List<ECHPlayer.TrackInfo> getTrackInfo();
+
+    /** 返回当前视频解码器名称。 */
+    String getVideoDecoder();
+
+    /** 返回当前音频解码器名称。 */
+    String getAudioDecoder();
+
+    /** 读取 long 类型播放器属性。 */
+    long getPropertyLong(int property, long defaultValue);
+
+    /** 读取 float 类型播放器属性。 */
+    float getPropertyFloat(int property, float defaultValue);
 
     /** 设置准备完成监听器。 */
     void setOnPreparedListener(ECHPlayer.OnPreparedListener listener);

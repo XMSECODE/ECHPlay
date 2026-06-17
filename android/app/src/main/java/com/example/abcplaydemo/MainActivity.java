@@ -453,6 +453,9 @@ public class MainActivity extends AppCompatActivity {
             }
             appendLog(formatMediaInfo(player.getMediaInfo()));
             appendLog(formatTrackInfo(player.getTrackInfo()));
+            appendLog(formatMediaMeta(player.getMediaMeta()));
+            appendLog(formatPropertyInfo(player));
+            appendLog(formatOptionSnapshots(player));
 
             durationMs = Math.max(0, player.getDuration());
             durationTimeText.setText(formatTime(durationMs));
@@ -959,6 +962,70 @@ public class MainActivity extends AppCompatActivity {
                 + " " + emptyToDash(info.audioCodec)
                 + " " + info.audioSampleRate + "Hz"
                 + " " + info.audioChannels + "ch";
+    }
+
+    /** 格式化媒体元信息，方便验证 v2.0 metadata API。 */
+    private String formatMediaMeta(ECHPlayer.MediaMeta meta) {
+        if (meta == null) {
+            return "media meta: unavailable";
+        }
+
+        return "media meta"
+                + "\nformat: " + emptyToDash(meta.format)
+                + "\ndurationMs: " + meta.durationMs
+                + "\nbitRate: " + meta.bitRate
+                + "\ntracks: " + meta.trackCount
+                + "\nvideoDecoder: " + emptyToDash(player.getVideoDecoder())
+                + "\naudioDecoder: " + emptyToDash(player.getAudioDecoder())
+                + "\nmetadataKeys: " + meta.metadata.size();
+    }
+
+    /** 格式化 property 信息，方便验证 v2.0 property API。 */
+    private String formatPropertyInfo(ECHPlayer targetPlayer) {
+        return "property info"
+                + "\nselectedVideo: " + targetPlayer.getPropertyLong(
+                        ECHPlayer.PROP_INT64_SELECTED_VIDEO_STREAM,
+                        -1L)
+                + "\nselectedAudio: " + targetPlayer.getPropertyLong(
+                        ECHPlayer.PROP_INT64_SELECTED_AUDIO_STREAM,
+                        -1L)
+                + "\nvideoDecoderType: " + targetPlayer.getPropertyLong(
+                        ECHPlayer.PROP_INT64_VIDEO_DECODER,
+                        ECHPlayer.PROP_DECODER_UNKNOWN)
+                + "\naudioDecoderType: " + targetPlayer.getPropertyLong(
+                        ECHPlayer.PROP_INT64_AUDIO_DECODER,
+                        ECHPlayer.PROP_DECODER_UNKNOWN)
+                + "\nbitRate: " + formatBitRate(targetPlayer.getPropertyLong(
+                        ECHPlayer.PROP_INT64_BIT_RATE,
+                        0L))
+                + "\ntcpSpeed: " + formatByteSpeed(targetPlayer.getPropertyLong(
+                        ECHPlayer.PROP_INT64_TCP_SPEED,
+                        0L))
+                + "\ndecodeFps: " + String.format(
+                        Locale.US,
+                        "%.2f",
+                        targetPlayer.getPropertyFloat(
+                                ECHPlayer.PROP_FLOAT_VIDEO_DECODE_FRAMES_PER_SECOND,
+                                0.0f))
+                + "\nrenderFps: " + String.format(
+                        Locale.US,
+                        "%.2f",
+                        targetPlayer.getPropertyFloat(
+                                ECHPlayer.PROP_FLOAT_VIDEO_OUTPUT_FRAMES_PER_SECOND,
+                                0.0f));
+    }
+
+    /** 格式化 option 快照，方便验证 v2.0 option API。 */
+    private String formatOptionSnapshots(ECHPlayer targetPlayer) {
+        return "option snapshot"
+                + "\nlongOptions: " + targetPlayer.getLongOptionsSnapshot().size()
+                + "\nstringOptions: " + targetPlayer.getStringOptionsSnapshot().size()
+                + "\nsupport timeout: " + targetPlayer.isOptionSupported(
+                        ECHPlayer.OPTION_CATEGORY_FORMAT,
+                        ECHPlayer.OPTION_TIMEOUT)
+                + "\nsupport unknown: " + targetPlayer.isOptionSupported(
+                        ECHPlayer.OPTION_CATEGORY_PLAYER,
+                        "unknown_option");
     }
 
     /** 格式化轨道信息，方便 Demo 日志阅读。 */

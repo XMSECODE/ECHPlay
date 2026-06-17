@@ -15,7 +15,9 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -208,6 +210,69 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     }
 
     /**
+     * 媒体元信息快照，用于对齐 ijkplayer 的 media meta 概念。
+     */
+    public static class MediaMeta {
+        /** 封装格式名称。 */
+        public final String format;
+        /** 媒体总时长，单位毫秒。 */
+        public final long durationMs;
+        /** 总码率，单位 bit/s。 */
+        public final long bitRate;
+        /** 视频流索引。 */
+        public final int videoStreamIndex;
+        /** 音频流索引。 */
+        public final int audioStreamIndex;
+        /** 视频编码名。 */
+        public final String videoCodec;
+        /** 视频宽度。 */
+        public final int videoWidth;
+        /** 视频高度。 */
+        public final int videoHeight;
+        /** 音频编码名。 */
+        public final String audioCodec;
+        /** 音频采样率。 */
+        public final int audioSampleRate;
+        /** 音频声道数。 */
+        public final int audioChannels;
+        /** 当前轨道数量。 */
+        public final int trackCount;
+        /** 展平后的元信息键值表。 */
+        public final Map<String, String> metadata;
+
+        /** 创建媒体元信息快照。 */
+        public MediaMeta(
+                String format,
+                long durationMs,
+                long bitRate,
+                int videoStreamIndex,
+                int audioStreamIndex,
+                String videoCodec,
+                int videoWidth,
+                int videoHeight,
+                String audioCodec,
+                int audioSampleRate,
+                int audioChannels,
+                int trackCount,
+                Map<String, String> metadata) {
+
+            this.format = format;
+            this.durationMs = durationMs;
+            this.bitRate = bitRate;
+            this.videoStreamIndex = videoStreamIndex;
+            this.audioStreamIndex = audioStreamIndex;
+            this.videoCodec = videoCodec;
+            this.videoWidth = videoWidth;
+            this.videoHeight = videoHeight;
+            this.audioCodec = audioCodec;
+            this.audioSampleRate = audioSampleRate;
+            this.audioChannels = audioChannels;
+            this.trackCount = trackCount;
+            this.metadata = Collections.unmodifiableMap(new LinkedHashMap<>(metadata));
+        }
+    }
+
+    /**
      * 轨道信息快照，用于展示 FFmpeg 读取到的每条 stream。
      */
     public static class TrackInfo {
@@ -382,8 +447,62 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     public static final int RENDER_MODE_NATIVE_WINDOW = 2;
     /** FFmpeg format 层 option 分类。 */
     public static final int OPTION_CATEGORY_FORMAT = 1;
+    /** FFmpeg codec 层 option 分类。 */
+    public static final int OPTION_CATEGORY_CODEC = 2;
+    /** FFmpeg swscale 层 option 分类。 */
+    public static final int OPTION_CATEGORY_SWS = 3;
     /** 播放器自身 option 分类。 */
-    public static final int OPTION_CATEGORY_PLAYER = 2;
+    public static final int OPTION_CATEGORY_PLAYER = 4;
+    /** 平均视频解码 FPS 属性。 */
+    public static final int PROP_FLOAT_VIDEO_DECODE_FRAMES_PER_SECOND = 10001;
+    /** 平均视频输出 FPS 属性。 */
+    public static final int PROP_FLOAT_VIDEO_OUTPUT_FRAMES_PER_SECOND = 10002;
+    /** 播放速率属性，v2.0 暂固定为 1。 */
+    public static final int PROP_FLOAT_PLAYBACK_RATE = 10003;
+    /** 丢帧率属性。 */
+    public static final int PROP_FLOAT_DROP_FRAME_RATE = 10007;
+    /** 当前选中视频流属性。 */
+    public static final int PROP_INT64_SELECTED_VIDEO_STREAM = 20001;
+    /** 当前选中音频流属性。 */
+    public static final int PROP_INT64_SELECTED_AUDIO_STREAM = 20002;
+    /** 当前视频解码器类型属性。 */
+    public static final int PROP_INT64_VIDEO_DECODER = 20003;
+    /** 当前音频解码器类型属性。 */
+    public static final int PROP_INT64_AUDIO_DECODER = 20004;
+    /** 视频缓存时长属性，单位毫秒。 */
+    public static final int PROP_INT64_VIDEO_CACHED_DURATION = 20005;
+    /** 音频缓存时长属性，单位毫秒。 */
+    public static final int PROP_INT64_AUDIO_CACHED_DURATION = 20006;
+    /** 视频缓存字节数属性，v2.0 暂按 0 返回。 */
+    public static final int PROP_INT64_VIDEO_CACHED_BYTES = 20007;
+    /** 音频缓存字节数属性，v2.0 暂按 0 返回。 */
+    public static final int PROP_INT64_AUDIO_CACHED_BYTES = 20008;
+    /** 视频缓存 packet 数属性。 */
+    public static final int PROP_INT64_VIDEO_CACHED_PACKETS = 20009;
+    /** 音频缓存 packet 数属性。 */
+    public static final int PROP_INT64_AUDIO_CACHED_PACKETS = 20010;
+    /** 当前选中字幕流属性，v2.0 暂返回 -1。 */
+    public static final int PROP_INT64_SELECTED_TIMEDTEXT_STREAM = 20011;
+    /** 总码率属性，单位 bit/s。 */
+    public static final int PROP_INT64_BIT_RATE = 20100;
+    /** TCP / 网络读取速度属性，单位字节/秒。 */
+    public static final int PROP_INT64_TCP_SPEED = 20200;
+    /** 异步缓存向后统计属性，v2.0 暂返回默认值。 */
+    public static final int PROP_INT64_ASYNC_STATISTIC_BUF_BACKWARDS = 20201;
+    /** 异步缓存向前统计属性，v2.0 暂返回默认值。 */
+    public static final int PROP_INT64_ASYNC_STATISTIC_BUF_FORWARDS = 20202;
+    /** 异步缓存容量属性，v2.0 暂返回默认值。 */
+    public static final int PROP_INT64_ASYNC_STATISTIC_BUF_CAPACITY = 20203;
+    /** 累计网络读取字节数属性。 */
+    public static final int PROP_INT64_TRAFFIC_STATISTIC_BYTE_COUNT = 20204;
+    /** 最近一次 seek 耗时属性，v2.0 暂返回默认值。 */
+    public static final int PROP_INT64_LATEST_SEEK_LOAD_DURATION = 20300;
+    /** 解码器未知。 */
+    public static final int PROP_DECODER_UNKNOWN = 0;
+    /** FFmpeg 软件解码器。 */
+    public static final int PROP_DECODER_AVCODEC = 1;
+    /** Android MediaCodec 硬解码器。 */
+    public static final int PROP_DECODER_MEDIACODEC = 2;
     /** RTSP 传输方式 option 名称。 */
     public static final String OPTION_RTSP_TRANSPORT = "rtsp_transport";
     /** HTTP headers option 名称。 */
@@ -499,6 +618,10 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     private String currentDataSource = "";
     /** 最近一次设置数据源时附带的 headers。 */
     private final Map<String, String> currentDataSourceHeaders = new HashMap<>();
+    /** 已成功设置的 long option 快照。 */
+    private final Map<String, Long> longOptions = new LinkedHashMap<>();
+    /** 已成功设置的 String option 快照。 */
+    private final Map<String, String> stringOptions = new LinkedHashMap<>();
     /** 左声道音量，范围 0 到 1。 */
     private float leftVolume = 1.0f;
     /** 右声道音量，范围 0 到 1。 */
@@ -759,40 +882,170 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         return parseTrackInfo(nativeGetTrackInfoText(nativeHandle));
     }
 
+    /** 获取当前媒体元信息快照。 */
+    public synchronized MediaMeta getMediaMeta() {
+        checkReleased();
+        MediaInfo info = getMediaInfo();
+        List<TrackInfo> tracks = getTrackInfo();
+        Map<String, String> metadata = new LinkedHashMap<>();
+        metadata.put("format", info.format);
+        metadata.put("durationMs", String.valueOf(info.durationMs));
+        metadata.put("bitRate", String.valueOf(info.bitRate));
+        metadata.put("videoStreamIndex", String.valueOf(info.videoStreamIndex));
+        metadata.put("audioStreamIndex", String.valueOf(info.audioStreamIndex));
+        metadata.put("videoCodec", info.videoCodec);
+        metadata.put("videoWidth", String.valueOf(info.videoWidth));
+        metadata.put("videoHeight", String.valueOf(info.videoHeight));
+        metadata.put("audioCodec", info.audioCodec);
+        metadata.put("audioSampleRate", String.valueOf(info.audioSampleRate));
+        metadata.put("audioChannels", String.valueOf(info.audioChannels));
+        metadata.put("trackCount", String.valueOf(tracks.size()));
+
+        for (TrackInfo track : tracks) {
+            String prefix = "track." + track.streamIndex + ".";
+            metadata.put(prefix + "type", track.type);
+            metadata.put(prefix + "codec", track.codec);
+            metadata.put(prefix + "language", track.language);
+        }
+
+        return new MediaMeta(
+                info.format,
+                info.durationMs,
+                info.bitRate,
+                info.videoStreamIndex,
+                info.audioStreamIndex,
+                info.videoCodec,
+                info.videoWidth,
+                info.videoHeight,
+                info.audioCodec,
+                info.audioSampleRate,
+                info.audioChannels,
+                tracks.size(),
+                metadata
+        );
+    }
+
+    /** 返回当前视频解码器名称。 */
+    public synchronized String getVideoDecoder() {
+        return getCurrentDecoderName();
+    }
+
+    /** 返回当前音频解码器名称。 */
+    public synchronized String getAudioDecoder() {
+        MediaInfo info = getMediaInfo();
+        if (info.audioCodec == null || info.audioCodec.length() == 0) {
+            return "";
+        }
+        return "ffmpeg-" + info.audioCodec;
+    }
+
+    /** 按 ijkplayer 风格读取 long 属性。 */
+    public synchronized long getPropertyLong(int property, long defaultValue) {
+        checkReleased();
+        switch (property) {
+            case PROP_INT64_SELECTED_VIDEO_STREAM:
+                return getMediaInfo().videoStreamIndex;
+            case PROP_INT64_SELECTED_AUDIO_STREAM:
+                return getMediaInfo().audioStreamIndex;
+            case PROP_INT64_SELECTED_TIMEDTEXT_STREAM:
+                return -1L;
+            case PROP_INT64_VIDEO_DECODER:
+                return decoderTypeToPropertyValue(getCurrentDecodeType());
+            case PROP_INT64_AUDIO_DECODER:
+                return getMediaInfo().audioStreamIndex >= 0
+                        ? PROP_DECODER_AVCODEC
+                        : PROP_DECODER_UNKNOWN;
+            case PROP_INT64_VIDEO_CACHED_DURATION:
+            case PROP_INT64_AUDIO_CACHED_DURATION:
+                return defaultValue;
+            case PROP_INT64_VIDEO_CACHED_BYTES:
+            case PROP_INT64_AUDIO_CACHED_BYTES:
+                return 0L;
+            case PROP_INT64_VIDEO_CACHED_PACKETS:
+                return nativeGetVideoPacketQueueSize(nativeHandle);
+            case PROP_INT64_AUDIO_CACHED_PACKETS:
+                return nativeGetAudioPacketQueueSize(nativeHandle);
+            case PROP_INT64_BIT_RATE:
+                return getMediaInfo().bitRate;
+            case PROP_INT64_TCP_SPEED:
+                return nativeGetReadSpeedBytesPerSecond(nativeHandle);
+            case PROP_INT64_TRAFFIC_STATISTIC_BYTE_COUNT:
+                return nativeGetReadBytes(nativeHandle);
+            case PROP_INT64_LATEST_SEEK_LOAD_DURATION:
+            case PROP_INT64_ASYNC_STATISTIC_BUF_BACKWARDS:
+            case PROP_INT64_ASYNC_STATISTIC_BUF_FORWARDS:
+            case PROP_INT64_ASYNC_STATISTIC_BUF_CAPACITY:
+                return defaultValue;
+            default:
+                return defaultValue;
+        }
+    }
+
+    /** 按 ijkplayer 风格读取 float 属性。 */
+    public synchronized float getPropertyFloat(int property, float defaultValue) {
+        checkReleased();
+        switch (property) {
+            case PROP_FLOAT_VIDEO_DECODE_FRAMES_PER_SECOND:
+                return (float) nativeGetDecodeFps(nativeHandle);
+            case PROP_FLOAT_VIDEO_OUTPUT_FRAMES_PER_SECOND:
+                return (float) nativeGetRenderFps(nativeHandle);
+            case PROP_FLOAT_PLAYBACK_RATE:
+                return 1.0f;
+            case PROP_FLOAT_DROP_FRAME_RATE:
+                long decoded = nativeGetDecodedFrameCount(nativeHandle);
+                long dropped = nativeGetDroppedFrameCount(nativeHandle);
+                long total = decoded + dropped;
+                return total <= 0 ? 0.0f : (float) dropped / (float) total;
+            default:
+                return defaultValue;
+        }
+    }
+
     /** 设置 long 类型播放器选项。 */
     public synchronized boolean setOption(int category, String name, long value) {
         checkReleased();
 
         if (OPTION_RTSP_TRANSPORT.equals(name)) {
             setRtspTransport(value == RTSP_TRANSPORT_UDP ? RTSP_TRANSPORT_UDP : RTSP_TRANSPORT_TCP);
+            rememberLongOption(category, name, value);
             return true;
         }
         if (OPTION_RENDER_MODE.equals(name)) {
             setRenderMode((int) value);
+            rememberLongOption(category, name, value);
             return true;
         }
         if (OPTION_DECODE_MODE.equals(name)) {
             setDecodeMode((int) value);
+            rememberLongOption(category, name, value);
             return true;
         }
         if (OPTION_MEDIACODEC.equals(name)) {
             setDecodeMode(value == 0 ? DECODE_MODE_SOFTWARE : DECODE_MODE_MEDIACODEC);
+            rememberLongOption(category, name, value);
             return true;
         }
         if (OPTION_RECONNECT.equals(name)) {
             setReconnectEnabled(value != 0);
+            rememberLongOption(category, name, value);
             return true;
         }
         if (OPTION_RECONNECT_MAX_COUNT.equals(name)) {
             setReconnectConfig((int) value, reconnectIntervalMs);
+            rememberLongOption(category, name, value);
             return true;
         }
         if (OPTION_RECONNECT_INTERVAL_MS.equals(name)) {
             setReconnectConfig(reconnectMaxCount, value);
+            rememberLongOption(category, name, value);
             return true;
         }
 
-        return nativeSetLongOption(nativeHandle, category, name, value);
+        boolean handled = nativeSetLongOption(nativeHandle, category, name, value);
+        if (handled) {
+            rememberLongOption(category, name, value);
+        }
+        return handled;
     }
 
     /** 设置 String 类型播放器选项。 */
@@ -805,6 +1058,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
             } else {
                 setRtspTransport(RTSP_TRANSPORT_TCP);
             }
+            rememberStringOption(category, name, value);
             return true;
         }
         if (OPTION_RENDER_MODE.equals(name)) {
@@ -816,10 +1070,12 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
             } else {
                 setRenderMode(RENDER_MODE_AUTO);
             }
+            rememberStringOption(category, name, value);
             return true;
         }
         if (OPTION_DECODE_MODE.equals(name)) {
             setDecodeMode(decodeModeFromText(value));
+            rememberStringOption(category, name, value);
             return true;
         }
         if (OPTION_MEDIACODEC.equals(name)) {
@@ -827,17 +1083,23 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
                     || "true".equalsIgnoreCase(value)
                     || OPTION_VALUE_DECODE_MEDIACODEC.equalsIgnoreCase(value);
             setDecodeMode(enable ? DECODE_MODE_MEDIACODEC : DECODE_MODE_SOFTWARE);
+            rememberStringOption(category, name, value);
             return true;
         }
         if (OPTION_RECONNECT.equals(name)) {
             boolean enable = "1".equals(value) || "true".equalsIgnoreCase(value);
             setReconnectEnabled(enable);
+            rememberStringOption(category, name, value);
             return true;
         }
         if (OPTION_HEADERS.equals(name)
                 || OPTION_USER_AGENT.equals(name)
                 || OPTION_PROTOCOL_WHITELIST.equals(name)) {
-            return nativeSetStringOption(nativeHandle, category, name, value == null ? "" : value);
+            boolean handled = nativeSetStringOption(nativeHandle, category, name, value == null ? "" : value);
+            if (handled) {
+                rememberStringOption(category, name, value);
+            }
+            return handled;
         }
 
         try {
@@ -847,6 +1109,43 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         }
 
         return false;
+    }
+
+    /** 返回 long option 快照。 */
+    public synchronized Map<String, Long> getLongOptionsSnapshot() {
+        return Collections.unmodifiableMap(new LinkedHashMap<>(longOptions));
+    }
+
+    /** 返回 String option 快照。 */
+    public synchronized Map<String, String> getStringOptionsSnapshot() {
+        return Collections.unmodifiableMap(new LinkedHashMap<>(stringOptions));
+    }
+
+    /** 判断指定 option 当前是否已支持。 */
+    public synchronized boolean isOptionSupported(int category, String name) {
+        if (name == null || name.length() == 0) {
+            return false;
+        }
+        if (category != OPTION_CATEGORY_FORMAT
+                && category != OPTION_CATEGORY_CODEC
+                && category != OPTION_CATEGORY_SWS
+                && category != OPTION_CATEGORY_PLAYER) {
+            return false;
+        }
+        return OPTION_RTSP_TRANSPORT.equals(name)
+                || OPTION_RENDER_MODE.equals(name)
+                || OPTION_DECODE_MODE.equals(name)
+                || OPTION_MEDIACODEC.equals(name)
+                || OPTION_RECONNECT.equals(name)
+                || OPTION_RECONNECT_MAX_COUNT.equals(name)
+                || OPTION_RECONNECT_INTERVAL_MS.equals(name)
+                || OPTION_TIMEOUT.equals(name)
+                || OPTION_RW_TIMEOUT.equals(name)
+                || OPTION_BUFFER_SIZE.equals(name)
+                || OPTION_MAX_DELAY.equals(name)
+                || OPTION_HEADERS.equals(name)
+                || OPTION_USER_AGENT.equals(name)
+                || OPTION_PROTOCOL_WHITELIST.equals(name);
     }
 
     /** 打开数据源并读取流信息。 */
@@ -1034,6 +1333,8 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         lastRecordingPath = "";
         currentDataSource = "";
         currentDataSourceHeaders.clear();
+        longOptions.clear();
+        stringOptions.clear();
         displayHolder = null;
         leftVolume = 1.0f;
         rightVolume = 1.0f;
@@ -1798,6 +2099,38 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         return DECODE_MODE_AUTO;
     }
 
+    /** 记录 long option 快照。 */
+    private void rememberLongOption(int category, String name, long value) {
+        if (name == null || name.length() == 0) {
+            return;
+        }
+        longOptions.put(buildOptionKey(category, name), value);
+    }
+
+    /** 记录 String option 快照。 */
+    private void rememberStringOption(int category, String name, String value) {
+        if (name == null || name.length() == 0) {
+            return;
+        }
+        stringOptions.put(buildOptionKey(category, name), value == null ? "" : value);
+    }
+
+    /** 构造稳定的 option 快照 key。 */
+    private String buildOptionKey(int category, String name) {
+        return category + ":" + name;
+    }
+
+    /** 将当前解码类型映射为 property 值。 */
+    private long decoderTypeToPropertyValue(String decodeType) {
+        if ("mediacodec".equalsIgnoreCase(decodeType)) {
+            return PROP_DECODER_MEDIACODEC;
+        }
+        if ("software".equalsIgnoreCase(decodeType)) {
+            return PROP_DECODER_AVCODEC;
+        }
+        return PROP_DECODER_UNKNOWN;
+    }
+
     /** 根据 Uri 解析现阶段可直接交给 FFmpeg 的数据源。 */
     private String resolveUriDataSource(Context context, Uri uri) {
         // v2.1 会使用 context 打开 content:// 和 FileDescriptor 数据源。
@@ -1838,12 +2171,14 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         currentDataSourceHeaders.clear();
         if (headers == null || headers.isEmpty()) {
             nativeSetStringOption(nativeHandle, OPTION_CATEGORY_FORMAT, OPTION_HEADERS, "");
+            stringOptions.remove(buildOptionKey(OPTION_CATEGORY_FORMAT, OPTION_HEADERS));
             return;
         }
 
         currentDataSourceHeaders.putAll(headers);
         String headerText = buildFfmpegHeaders(headers);
         nativeSetStringOption(nativeHandle, OPTION_CATEGORY_FORMAT, OPTION_HEADERS, headerText);
+        rememberStringOption(OPTION_CATEGORY_FORMAT, OPTION_HEADERS, headerText);
     }
 
     /** 把 headers Map 转为 FFmpeg 需要的多行 Header 文本。 */
