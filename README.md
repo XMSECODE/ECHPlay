@@ -100,6 +100,13 @@ v2.8 测试体系文档：
 4. `long_play_test_template.md`：2 小时长播测试记录模板。
 5. `android/tools/collect_diagnostics.sh`：adb 诊断信息收集脚本。
 
+v2.9 后端预研文档：
+
+1. `v2.9_requirements_goals.md`：v2.9 可选后端和跨平台预研目标拆解。
+2. `v2.9_backend_decision.md`：ECHPlayer、Android MediaPlayer、ExoPlayer 后端边界决策。
+3. `v2.9_cross_platform_research.md`：iOS 和平台无关 core 预研结论。
+4. `v2.9_validation_report.md`：v2.9 后端抽象验证记录。
+
 ## 快速运行 Demo
 
 ```bash
@@ -187,7 +194,7 @@ cd android
 发布坐标：
 
 ```text
-com.echplay:echplayer:2.8.0
+com.echplay:echplayer:2.9.0
 ```
 
 外部项目 `settings.gradle` 或根 `build.gradle` 中加入 `mavenLocal()`：
@@ -204,7 +211,7 @@ repositories {
 
 ```gradle
 dependencies {
-    implementation 'com.echplay:echplayer:2.8.0'
+    implementation 'com.echplay:echplayer:2.9.0'
 }
 ```
 
@@ -233,6 +240,26 @@ adb shell am start \
 cd android
 ./tools/collect_diagnostics.sh
 ```
+
+## 可选后端预研
+
+v2.9 新增 `PlayerBackend` 最小接口，用于预研多后端架构：
+
+```java
+PlayerBackend backend = PlayerBackendFactory.createDefault();
+backend.setSurface(surface);
+backend.setDataSource("/sdcard/Movies/test.mp4");
+backend.prepare();
+backend.start();
+```
+
+如果只想使用 Android 系统播放器做兼容性对照，可以创建 fallback 后端：
+
+```java
+PlayerBackend backend = PlayerBackendFactory.create(PlayerBackendType.ANDROID_MEDIA_PLAYER);
+```
+
+说明：`AndroidMediaPlayerBackend` 只是 fallback 原型，不支持 ECHPlayer 的 RTSP 增强、截图、录制、FFmpeg option / property、缓存统计和 Native invoke。默认生产路径仍建议使用 `ECHPlayer` 或 `ECHPlayerBackend`。
 
 ## ECHPlayer 基础用法
 

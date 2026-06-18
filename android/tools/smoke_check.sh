@@ -49,6 +49,8 @@ RELEASE_AAR="echplayer/build/outputs/aar/echplayer-release.aar"
 DEBUG_APK="app/build/outputs/apk/debug/app-debug.apk"
 PLAYER_API="echplayer/src/main/java/com/echplay/player/ECHPlayer.java"
 DEMO_ACTIVITY="app/src/main/java/com/example/abcplaydemo/MainActivity.java"
+BACKEND_API="echplayer/src/main/java/com/echplay/player/PlayerBackend.java"
+BACKEND_FACTORY="echplayer/src/main/java/com/echplay/player/PlayerBackendFactory.java"
 
 # 检查构建产物是否生成。
 require_file "$DEBUG_AAR"
@@ -70,12 +72,16 @@ require_text "$PLAYER_API" "setRtspTransport"
 require_text "$PLAYER_API" "getPropertyLong"
 require_text "$DEMO_ACTIVITY" "EXTRA_AUTO_PLAY"
 require_text "$DEMO_ACTIVITY" "scheduleAutomationActions"
+require_text "$BACKEND_API" "interface PlayerBackend"
+require_text "$BACKEND_FACTORY" "AndroidMediaPlayerBackend"
 
 # 检查发版文档是否存在，保证代码和流程一起交付。
 require_file "../abi_release_status.md"
 require_file "../github_release_template.md"
 require_file "../v2.8_test_matrix.md"
 require_file "../v2.8_validation_report.md"
+require_file "../v2.9_backend_decision.md"
+require_file "../v2.9_validation_report.md"
 
 if command -v adb >/dev/null 2>&1; then
   # 有 adb 设备时做安装和启动验证，没有设备则跳过。

@@ -6,7 +6,7 @@ plugins {
 // SDK 发布坐标，Maven Local 和后续远端仓库都复用这组信息。
 def publishedGroupId = 'com.echplay'
 def publishedArtifactId = 'echplayer'
-def publishedVersion = '2.8.0'
+def publishedVersion = '2.9.0'
 
 // 候选 ABI 列表。armeabi-v7a 已预留，补齐对应 FFmpeg so 后会自动进入打包。
 def candidateNativeAbis = ['arm64-v8a', 'armeabi-v7a']
