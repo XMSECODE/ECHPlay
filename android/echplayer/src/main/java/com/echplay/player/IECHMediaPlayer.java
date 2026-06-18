@@ -111,6 +111,12 @@ public interface IECHMediaPlayer {
     /** 返回轨道信息列表。 */
     List<ECHPlayer.TrackInfo> getTrackInfo();
 
+    /** 选择指定轨道。 */
+    void selectTrack(int streamIndex);
+
+    /** 取消选择指定轨道。 */
+    void deselectTrack(int streamIndex);
+
     /** 返回当前视频解码器名称。 */
     String getVideoDecoder();
 

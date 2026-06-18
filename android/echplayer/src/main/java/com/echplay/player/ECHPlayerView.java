@@ -76,6 +76,8 @@ public class ECHPlayerView extends LinearLayout {
     private final LinearLayout statusOverlay;
     /** 状态文案。 */
     private final TextView statusText;
+    /** 字幕文本覆盖层。 */
+    private final TextView subtitleText;
     /** 重试按钮。 */
     private final Button retryButton;
     /** 播放按钮。 */
@@ -178,6 +180,22 @@ public class ECHPlayerView extends LinearLayout {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 Gravity.CENTER
         ));
+
+        subtitleText = new TextView(context);
+        subtitleText.setTextColor(0xFFFFFFFF);
+        subtitleText.setTextSize(18f);
+        subtitleText.setGravity(Gravity.CENTER);
+        subtitleText.setShadowLayer(4f, 1f, 1f, 0xFF000000);
+        subtitleText.setVisibility(View.GONE);
+        FrameLayout.LayoutParams subtitleParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL
+        );
+        subtitleParams.leftMargin = dp(16);
+        subtitleParams.rightMargin = dp(16);
+        subtitleParams.bottomMargin = dp(24);
+        surfaceContainer.addView(subtitleText, subtitleParams);
 
         statusOverlay = new LinearLayout(context);
         statusOverlay.setOrientation(VERTICAL);
@@ -403,6 +421,7 @@ public class ECHPlayerView extends LinearLayout {
                 emitEvent("PlayerView stop");
                 stopProgressUpdates();
                 resetProgressUi();
+                updateSubtitleText(null);
                 updateViewState(ViewState.STOPPED, "已停止", false);
             } catch (IllegalStateException e) {
                 emitEvent("PlayerView stop ignored: " + e.getMessage());
@@ -420,6 +439,7 @@ public class ECHPlayerView extends LinearLayout {
             player = null;
             released = true;
             resetProgressUi();
+            updateSubtitleText(null);
             updateViewState(ViewState.RELEASED, "", false);
             updateRecordButtonState();
         }
@@ -588,6 +608,18 @@ public class ECHPlayerView extends LinearLayout {
         }
     }
 
+    /** 更新字幕覆盖层文本。 */
+    private void updateSubtitleText(ECHTimedText text) {
+        String value = text == null ? "" : text.getText();
+        if (value == null || value.length() == 0) {
+            subtitleText.setText("");
+            subtitleText.setVisibility(View.GONE);
+            return;
+        }
+        subtitleText.setText(value);
+        subtitleText.setVisibility(View.VISIBLE);
+    }
+
     /** 使用最近一次播放地址和配置重新播放。 */
     private void retry() {
         if (released) {
@@ -624,6 +656,7 @@ public class ECHPlayerView extends LinearLayout {
         player.setOnCompletionListener(targetPlayer ->
                 postToUi(() -> {
                     stopProgressUpdates();
+                    updateSubtitleText(null);
                     updateViewState(ViewState.STOPPED, "播放完成", false);
                 }));
         player.setOnBufferingUpdateListener((targetPlayer, percent) ->
@@ -634,6 +667,8 @@ public class ECHPlayerView extends LinearLayout {
                 emitEvent("PlayerView video size: " + width + "x" + height);
             });
         });
+        player.setOnTimedTextListener((targetPlayer, text) ->
+                postToUi(() -> updateSubtitleText(text)));
         applySurfaceScaleTypeToPlayer();
         applyRenderModeToPlayer();
         applyDecodeModeToPlayer();

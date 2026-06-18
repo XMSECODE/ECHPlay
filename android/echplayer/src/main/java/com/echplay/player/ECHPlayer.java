@@ -16,6 +16,8 @@ import java.io.File;
 import java.io.FileDescriptor;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
@@ -317,6 +319,23 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
             this.height = height;
             this.sampleRate = sampleRate;
             this.channels = channels;
+        }
+    }
+
+    /** 外挂字幕片段。 */
+    private static class SubtitleCue {
+        /** 开始显示时间，单位毫秒。 */
+        final long startMs;
+        /** 结束显示时间，单位毫秒。 */
+        final long endMs;
+        /** 字幕文本。 */
+        final String text;
+
+        /** 创建外挂字幕片段。 */
+        SubtitleCue(long startMs, long endMs, String text) {
+            this.startMs = startMs;
+            this.endMs = endMs;
+            this.text = text == null ? "" : text;
         }
     }
 
@@ -676,6 +695,16 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     private float audioDelayMs = 0.0f;
     /** 当前是否已经获得音频焦点。 */
     private boolean audioFocusGranted = false;
+    /** 当前选中视频轨道 stream index。 */
+    private int selectedVideoTrack = -1;
+    /** 当前选中音频轨道 stream index。 */
+    private int selectedAudioTrack = -1;
+    /** 当前选中字幕轨道 stream index。 */
+    private int selectedTimedTextTrack = -1;
+    /** 外挂字幕片段列表。 */
+    private final List<SubtitleCue> externalSubtitleCues = new ArrayList<>();
+    /** 最近一次分发的字幕片段索引。 */
+    private int lastDispatchedSubtitleCueIndex = -1;
     /** Android O 及以上使用的音频焦点请求对象。 */
     private AudioFocusRequest audioFocusRequest;
     /** 音频焦点变化监听器。 */
@@ -1006,6 +1035,60 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         return parseTrackInfo(nativeGetTrackInfoText(nativeHandle));
     }
 
+    /** 选择指定轨道。 */
+    @Override
+    public synchronized void selectTrack(int streamIndex) {
+        checkReleased();
+        TrackInfo track = findTrackByIndex(streamIndex);
+        if (track == null) {
+            throw new IllegalArgumentException("track not found: " + streamIndex);
+        }
+
+        if ("video".equals(track.type)) {
+            selectedVideoTrack = streamIndex;
+        } else if ("audio".equals(track.type)) {
+            selectedAudioTrack = streamIndex;
+        } else if ("subtitle".equals(track.type)) {
+            selectedTimedTextTrack = streamIndex;
+        } else {
+            throw new IllegalArgumentException("track type is not selectable: " + track.type);
+        }
+    }
+
+    /** 取消选择指定轨道。 */
+    @Override
+    public synchronized void deselectTrack(int streamIndex) {
+        checkReleased();
+        if (selectedVideoTrack == streamIndex) {
+            selectedVideoTrack = -1;
+        }
+        if (selectedAudioTrack == streamIndex) {
+            selectedAudioTrack = -1;
+        }
+        if (selectedTimedTextTrack == streamIndex) {
+            selectedTimedTextTrack = -1;
+        }
+    }
+
+    /** 加载外部 SRT 字幕文件。 */
+    public synchronized void loadExternalSubtitle(File subtitleFile) throws IOException {
+        checkReleased();
+        if (subtitleFile == null) {
+            throw new IllegalArgumentException("subtitleFile is null");
+        }
+        byte[] data = Files.readAllBytes(subtitleFile.toPath());
+        loadExternalSubtitleText(new String(data, StandardCharsets.UTF_8));
+    }
+
+    /** 加载外部 SRT 字幕文本。 */
+    public synchronized void loadExternalSubtitleText(String subtitleText) {
+        checkReleased();
+        externalSubtitleCues.clear();
+        externalSubtitleCues.addAll(parseSrtCues(subtitleText));
+        lastDispatchedSubtitleCueIndex = -1;
+        selectedTimedTextTrack = externalSubtitleCues.isEmpty() ? -1 : -2;
+    }
+
     /** 获取当前媒体元信息快照。 */
     public synchronized MediaMeta getMediaMeta() {
         checkReleased();
@@ -1068,11 +1151,11 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         checkReleased();
         switch (property) {
             case PROP_INT64_SELECTED_VIDEO_STREAM:
-                return getMediaInfo().videoStreamIndex;
+                return selectedVideoTrack >= 0 ? selectedVideoTrack : getMediaInfo().videoStreamIndex;
             case PROP_INT64_SELECTED_AUDIO_STREAM:
-                return getMediaInfo().audioStreamIndex;
+                return selectedAudioTrack >= 0 ? selectedAudioTrack : getMediaInfo().audioStreamIndex;
             case PROP_INT64_SELECTED_TIMEDTEXT_STREAM:
-                return -1L;
+                return selectedTimedTextTrack;
             case PROP_INT64_VIDEO_DECODER:
                 return decoderTypeToPropertyValue(getCurrentDecodeType());
             case PROP_INT64_AUDIO_DECODER:
@@ -1555,6 +1638,11 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         audioDelayMs = 0.0f;
         audioFocusGranted = false;
         audioFocusRequest = null;
+        selectedVideoTrack = -1;
+        selectedAudioTrack = -1;
+        selectedTimedTextTrack = -1;
+        externalSubtitleCues.clear();
+        lastDispatchedSubtitleCueIndex = -1;
         looping = false;
         latestSeekLoadDurationMs = -1L;
         accurateSeekEnabled = false;
@@ -1651,6 +1739,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
                 && currentPosition >= Math.max(0, duration - 500)) {
             dispatchCompletion();
         }
+        dispatchExternalSubtitleForPosition(currentPosition);
         return currentPosition;
     }
 
@@ -2148,6 +2237,49 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         if (onTimedTextListener != null) {
             onTimedTextListener.onTimedText(this, text);
         }
+    }
+
+    /** 按 stream index 查找轨道。 */
+    private TrackInfo findTrackByIndex(int streamIndex) {
+        List<TrackInfo> tracks = getTrackInfo();
+        for (TrackInfo track : tracks) {
+            if (track.streamIndex == streamIndex) {
+                return track;
+            }
+        }
+        return null;
+    }
+
+    /** 根据当前播放位置分发外挂字幕。 */
+    private void dispatchExternalSubtitleForPosition(long positionMs) {
+        if (externalSubtitleCues.isEmpty() || selectedTimedTextTrack == -1) {
+            return;
+        }
+
+        int cueIndex = findSubtitleCueIndex(positionMs);
+        if (cueIndex == lastDispatchedSubtitleCueIndex) {
+            return;
+        }
+
+        lastDispatchedSubtitleCueIndex = cueIndex;
+        if (cueIndex < 0) {
+            dispatchTimedText(new ECHTimedText(null, ""));
+            return;
+        }
+
+        SubtitleCue cue = externalSubtitleCues.get(cueIndex);
+        dispatchTimedText(new ECHTimedText(null, cue.text));
+    }
+
+    /** 查找当前时间命中的外挂字幕片段。 */
+    private int findSubtitleCueIndex(long positionMs) {
+        for (int index = 0; index < externalSubtitleCues.size(); index++) {
+            SubtitleCue cue = externalSubtitleCues.get(index);
+            if (positionMs >= cue.startMs && positionMs <= cue.endMs) {
+                return index;
+            }
+        }
+        return -1;
     }
 
     /** 循环播放时尝试回到开头并重新启动播放。 */
@@ -2729,6 +2861,92 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         } catch (IllegalArgumentException ignored) {
             // 部分设备不接受过高或过低采样率，保留期望速度，后续 native pipeline 再深接。
         }
+    }
+
+    /** 解析 SRT 字幕文本。 */
+    private List<SubtitleCue> parseSrtCues(String subtitleText) {
+        List<SubtitleCue> cues = new ArrayList<>();
+        if (subtitleText == null || subtitleText.length() == 0) {
+            return cues;
+        }
+
+        String normalizedText = subtitleText.replace("\r\n", "\n").replace('\r', '\n');
+        String[] blocks = normalizedText.split("\n\n+");
+        for (String block : blocks) {
+            SubtitleCue cue = parseSrtCueBlock(block);
+            if (cue != null) {
+                cues.add(cue);
+            }
+        }
+        return cues;
+    }
+
+    /** 解析单个 SRT 字幕块。 */
+    private SubtitleCue parseSrtCueBlock(String block) {
+        if (block == null) {
+            return null;
+        }
+        String[] lines = block.trim().split("\n");
+        if (lines.length < 2) {
+            return null;
+        }
+
+        int timingLineIndex = lines[0].contains("-->") ? 0 : 1;
+        if (timingLineIndex >= lines.length || !lines[timingLineIndex].contains("-->")) {
+            return null;
+        }
+
+        String[] range = lines[timingLineIndex].split("-->");
+        if (range.length != 2) {
+            return null;
+        }
+
+        long startMs = parseSrtTimeMs(range[0].trim());
+        long endMs = parseSrtTimeMs(range[1].trim());
+        if (startMs < 0L || endMs <= startMs) {
+            return null;
+        }
+
+        StringBuilder textBuilder = new StringBuilder();
+        for (int index = timingLineIndex + 1; index < lines.length; index++) {
+            if (textBuilder.length() > 0) {
+                textBuilder.append('\n');
+            }
+            textBuilder.append(lines[index]);
+        }
+        return new SubtitleCue(startMs, endMs, textBuilder.toString());
+    }
+
+    /** 解析 SRT 时间戳为毫秒。 */
+    private long parseSrtTimeMs(String value) {
+        String normalized = value.replace(',', '.');
+        String[] parts = normalized.split(":");
+        if (parts.length != 3) {
+            return -1L;
+        }
+        try {
+            long hours = Long.parseLong(parts[0].trim());
+            long minutes = Long.parseLong(parts[1].trim());
+            String[] secondParts = parts[2].split("\\.");
+            long seconds = Long.parseLong(secondParts[0].trim());
+            long millis = secondParts.length > 1
+                    ? parseMillisPart(secondParts[1].trim())
+                    : 0L;
+            return hours * 3600000L + minutes * 60000L + seconds * 1000L + millis;
+        } catch (NumberFormatException ignored) {
+            return -1L;
+        }
+    }
+
+    /** 把 SRT 毫秒片段补齐到三位。 */
+    private long parseMillisPart(String value) {
+        if (value.length() == 0) {
+            return 0L;
+        }
+        String millisText = value.length() >= 3
+                ? value.substring(0, 3)
+                : (value + "000").substring(0, 3);
+        return Long.parseLong(millisText);
     }
 
     /** 从 native 刷新当前实际解码信息。 */
