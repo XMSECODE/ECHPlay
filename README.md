@@ -178,7 +178,7 @@ ECHPlayer player = new ECHPlayer();
 player.setSurface(surface);
 player.setRenderMode(ECHPlayer.RENDER_MODE_AUTO);
 player.setDecodeMode(ECHPlayer.DECODE_MODE_AUTO);
-player.setDataSource("rtsp://192.168.1.1:554/live");
+player.setDataSource("rtsp://120.24.161.118:8554/live");
 player.setRtspTransport(ECHPlayer.RTSP_TRANSPORT_TCP);
 player.setReconnectEnabled(true);
 player.setReconnectConfig(3, 2_000L);
@@ -348,7 +348,7 @@ Java：
 
 ```java
 ECHPlayerView playerView = findViewById(R.id.playerView);
-playerView.setVideoPath("rtsp://192.168.1.1:554/live");
+playerView.setVideoPath("rtsp://120.24.161.118:8554/live");
 playerView.setRtspTransport(ECHPlayer.RTSP_TRANSPORT_TCP);
 playerView.setRenderMode(ECHPlayer.RENDER_MODE_AUTO);
 playerView.setDecodeMode(ECHPlayer.DECODE_MODE_AUTO);

@@ -73,7 +73,7 @@
                             android:inputType="textUri"
                             android:maxLines="1"
                             android:singleLine="true"
-                            android:text="rtsp://192.168.1.1:554/live" />
+                            android:text="rtsp://120.24.161.118:8554/live" />
 
                     </LinearLayout>
 

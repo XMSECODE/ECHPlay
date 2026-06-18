@@ -46,7 +46,7 @@ public class MainActivity extends AppCompatActivity {
     /** RTSP 传输方式缓存 key。 */
     private static final String KEY_RTSP_TRANSPORT = "rtsp_transport";
     /** 默认网络播放地址。 */
-    private static final String DEFAULT_NETWORK_SOURCE = "rtsp://192.168.1.1:554/live";
+    private static final String DEFAULT_NETWORK_SOURCE = "rtsp://120.24.161.118:8554/live";
     /** 截图目录名。 */
     private static final String SCREENSHOT_DIR = "screenshots";
     /** 录制目录名。 */
