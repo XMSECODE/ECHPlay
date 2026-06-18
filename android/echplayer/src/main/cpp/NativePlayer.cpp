@@ -268,7 +268,7 @@ bool NativePlayer::setLongOption(int category, const std::string &name, int64_t 
         return false;
     }
 
-    if (name == "timeout") {
+    if (name == "timeout" || name == "stimeout") {
         openTimeoutUs = value;
         return true;
     }
@@ -336,6 +336,7 @@ std::string NativePlayer::prepare() {
         av_dict_set(&options, "buffer_size", std::to_string(inputBufferSize).c_str(), 0);
     }
     if (rtspSource) {
+        av_dict_set(&options, "stimeout", std::to_string(openTimeoutUs).c_str(), 0);
         av_dict_set(
                 &options,
                 "rtsp_transport",

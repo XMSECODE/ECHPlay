@@ -5,7 +5,9 @@ import android.net.Uri;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 
+import java.io.File;
 import java.io.FileDescriptor;
+import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 
@@ -33,6 +35,9 @@ public interface IECHMediaPlayer {
 
     /** 设置文件描述符数据源。 */
     void setDataSource(FileDescriptor fd);
+
+    /** 设置自定义数据源，并把数据落到临时文件后播放。 */
+    void setDataSource(ECHMediaDataSource dataSource, File cacheFile) throws IOException;
 
     /** 返回最近设置的数据源。 */
     String getDataSource();

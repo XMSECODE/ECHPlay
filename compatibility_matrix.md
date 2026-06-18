@@ -1,6 +1,6 @@
 # ECHPlay 兼容性矩阵
 
-更新时间：2026-06-13
+更新时间：2026-06-18
 
 状态说明：
 
@@ -28,12 +28,12 @@
 | 协议 | 状态 | 已知结果 | 下一步 |
 | --- | --- | --- | --- |
 | 本地 MP4 | 已通过 | v1.4 起持续回归，支持播放、暂停、恢复、seek、截图、录制 | v1.8 smoke 后继续真机复测 |
-| HTTP MP4 | 已通过 | v1.5 faststart MP4 播放通过，seek 需要 Range 友好服务端 | 补 HTTP Range seek 专项 |
+| HTTP MP4 | 已通过 | v1.5 faststart MP4 播放通过，v2.1 支持 headers/user_agent/protocol_whitelist | 补 HTTP Range seek 专项 |
 | HTTPS MP4 | 待验证 | FFmpeg 可能支持，证书和 TLS 兼容性未系统验证 | 准备稳定 HTTPS 测试源 |
 | HLS VOD | 已通过 | v1.5 m3u8 VOD 基础播放通过 | 补多码率、加密流记录 |
 | HLS Live | 待验证 | 直播流 seek 预期不支持 | 准备稳定 Live 源 |
-| RTSP TCP | 已执行未通过 | mediamtx + 宿主机 FFmpeg 拉流通过，Android FFmpeg 打开失败 | 继续定位 Android FFmpeg 网络/协议配置 |
-| RTSP UDP | 已执行未通过 | mediamtx 源可用，Android 真机 UDP 拉流超时 | 继续定位网络权限、防火墙、超时参数 |
+| RTSP TCP | 已执行未通过 | mediamtx + 宿主机 FFmpeg 拉流通过，v2.1 已补 stimeout/rw_timeout/buffer_size/max_delay 参数 | 继续定位 Android FFmpeg 网络/协议配置 |
+| RTSP UDP | 已执行未通过 | mediamtx 源可用，v2.1 已补 UDP 下常用超时和缓冲参数 | 继续定位网络权限、防火墙、超时参数 |
 
 ============================================================
 三、编码与解码矩阵
@@ -64,6 +64,9 @@
 | 媒体信息 / 轨道信息 | 已通过 | v1.6 新增 API 和 Demo 展示 |
 | PlayerView 进度条 / 时间 / seek | 已通过 | v1.7 新增 |
 | PlayerView 控制条自动隐藏 | 已通过 | v1.7 新增 |
+| content Uri 数据源 | 待验证 | v2.1 新增，通过 ContentResolver 打开 fd 并交给 FFmpeg |
+| FileDescriptor 数据源 | 待验证 | v2.1 新增，支持 /proc/self/fd 路径，调用方需保持 fd 打开 |
+| 自定义数据源 | 待验证 | v2.1 新增 ECHMediaDataSource，当前采用临时文件桥接 |
 
 ============================================================
 五、待补验证

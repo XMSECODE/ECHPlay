@@ -6,6 +6,7 @@ import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioTrack;
 import android.net.Uri;
+import android.os.ParcelFileDescriptor;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 
@@ -13,6 +14,8 @@ import java.io.File;
 import java.io.FileDescriptor;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -535,6 +538,8 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     public static final String OPTION_VALUE_DECODE_MEDIACODEC = "mediacodec";
     /** 打开输入超时时间 option 名称，单位微秒。 */
     public static final String OPTION_TIMEOUT = "timeout";
+    /** RTSP 建连超时时间 option 名称，单位微秒，兼容部分 FFmpeg 构建。 */
+    public static final String OPTION_STIMEOUT = "stimeout";
     /** 网络读取超时时间 option 名称，单位微秒。 */
     public static final String OPTION_RW_TIMEOUT = "rw_timeout";
     /** 网络输入缓冲大小 option 名称，单位字节。 */
@@ -616,6 +621,8 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     private String lastRecordingPath = "";
     /** 最近一次设置的数据源。 */
     private String currentDataSource = "";
+    /** 当前 content Uri 打开的文件描述符，需要保持到 reset/release。 */
+    private ParcelFileDescriptor currentParcelFileDescriptor;
     /** 最近一次设置数据源时附带的 headers。 */
     private final Map<String, String> currentDataSourceHeaders = new HashMap<>();
     /** 已成功设置的 long option 快照。 */
@@ -704,6 +711,14 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
 
     /** 设置带 headers 的播放数据源。 */
     public synchronized void setDataSource(String dataSource, Map<String, String> headers) {
+        setResolvedDataSource(dataSource, headers, null);
+    }
+
+    /** 设置已经解析完成的数据源，并按需持有文件描述符。 */
+    private void setResolvedDataSource(
+            String dataSource,
+            Map<String, String> headers,
+            ParcelFileDescriptor parcelFileDescriptor) {
         checkReleased();
         requireState(State.IDLE, State.STOPPED, State.ERROR);
 
@@ -711,6 +726,8 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
             throw new IllegalArgumentException("dataSource is empty");
         }
 
+        closeCurrentParcelFileDescriptor();
+        currentParcelFileDescriptor = parcelFileDescriptor;
         nativeSetDataSource(nativeHandle, dataSource);
         applyDataSourceHeaders(headers);
         currentDataSource = dataSource;
@@ -736,18 +753,46 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
             throw new IllegalArgumentException("uri is null");
         }
 
+        String scheme = uri.getScheme();
+        if ("content".equalsIgnoreCase(scheme)) {
+            setContentUriDataSource(context, uri, headers);
+            return;
+        }
+
         String resolvedSource = resolveUriDataSource(context, uri);
         setDataSource(resolvedSource, headers);
     }
 
-    /** 设置文件描述符播放数据源，完整 Native FD 播放将在 v2.1 补齐。 */
+    /** 设置文件描述符播放数据源，调用方需要保证 fd 在播放期间保持打开。 */
     public synchronized void setDataSource(FileDescriptor fd) {
         if (fd == null) {
             throw new IllegalArgumentException("fd is null");
         }
-        throw new UnsupportedOperationException(
-                "FileDescriptor data source will be implemented in v2.1"
-        );
+        setResolvedDataSource(resolveFileDescriptorDataSource(fd), null, null);
+    }
+
+    /** 设置 ParcelFileDescriptor 播放数据源，播放器会在 reset/release 时关闭它。 */
+    public synchronized void setDataSource(ParcelFileDescriptor parcelFileDescriptor) {
+        if (parcelFileDescriptor == null) {
+            throw new IllegalArgumentException("parcelFileDescriptor is null");
+        }
+        setResolvedDataSource(resolveParcelFileDescriptorDataSource(parcelFileDescriptor), null,
+                parcelFileDescriptor);
+    }
+
+    /** 设置自定义数据源，并把数据顺序写入临时文件后交给 FFmpeg 播放。 */
+    @Override
+    public synchronized void setDataSource(ECHMediaDataSource dataSource, File cacheFile)
+            throws IOException {
+        if (dataSource == null) {
+            throw new IllegalArgumentException("dataSource is null");
+        }
+        if (cacheFile == null) {
+            throw new IllegalArgumentException("cacheFile is null");
+        }
+
+        copyCustomDataSourceToFile(dataSource, cacheFile);
+        setDataSource(cacheFile.getAbsolutePath());
     }
 
     /** 返回最近一次设置的数据源。 */
@@ -1140,6 +1185,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
                 || OPTION_RECONNECT_MAX_COUNT.equals(name)
                 || OPTION_RECONNECT_INTERVAL_MS.equals(name)
                 || OPTION_TIMEOUT.equals(name)
+                || OPTION_STIMEOUT.equals(name)
                 || OPTION_RW_TIMEOUT.equals(name)
                 || OPTION_BUFFER_SIZE.equals(name)
                 || OPTION_MAX_DELAY.equals(name)
@@ -1315,6 +1361,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         releaseAudioTrack();
         nativeRelease(nativeHandle);
         nativeHandle = nativeInit();
+        closeCurrentParcelFileDescriptor();
         prepared = false;
         playing = false;
         paused = false;
@@ -1618,6 +1665,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
             stopRecordingIfNeeded();
             nativeRelease(nativeHandle);
             nativeHandle = 0;
+            closeCurrentParcelFileDescriptor();
             released = true;
             prepared = false;
             playing = false;
@@ -2131,9 +2179,8 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         return PROP_DECODER_UNKNOWN;
     }
 
-    /** 根据 Uri 解析现阶段可直接交给 FFmpeg 的数据源。 */
+    /** 根据 Uri 解析可直接交给 FFmpeg 的数据源。 */
     private String resolveUriDataSource(Context context, Uri uri) {
-        // v2.1 会使用 context 打开 content:// 和 FileDescriptor 数据源。
         String scheme = uri.getScheme();
         if (scheme == null || scheme.length() == 0) {
             String path = uri.getPath();
@@ -2157,13 +2204,120 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
             return uri.toString();
         }
 
-        if ("content".equalsIgnoreCase(scheme)) {
-            throw new UnsupportedOperationException(
-                    "content Uri data source will be implemented in v2.1"
-            );
+        return uri.toString();
+    }
+
+    /** 打开 content Uri 并转成 FFmpeg 可访问的 fd 路径。 */
+    private void setContentUriDataSource(Context context, Uri uri, Map<String, String> headers) {
+        if (context == null) {
+            throw new IllegalArgumentException("context is null for content uri");
         }
 
-        return uri.toString();
+        ParcelFileDescriptor parcelFileDescriptor = null;
+        try {
+            parcelFileDescriptor = context.getContentResolver().openFileDescriptor(uri, "r");
+            if (parcelFileDescriptor == null) {
+                throw new IllegalArgumentException("cannot open content uri: " + uri);
+            }
+            setResolvedDataSource(resolveParcelFileDescriptorDataSource(parcelFileDescriptor),
+                    headers, parcelFileDescriptor);
+            parcelFileDescriptor = null;
+        } catch (IOException e) {
+            throw new IllegalArgumentException("cannot open content uri: " + uri, e);
+        } finally {
+            if (parcelFileDescriptor != null) {
+                try {
+                    parcelFileDescriptor.close();
+                } catch (IOException ignored) {
+                    // 打开失败时尽量释放临时 fd，避免泄漏。
+                }
+            }
+        }
+    }
+
+    /** 把 ParcelFileDescriptor 转为 /proc/self/fd 路径。 */
+    private String resolveParcelFileDescriptorDataSource(ParcelFileDescriptor parcelFileDescriptor) {
+        int rawFd = parcelFileDescriptor.getFd();
+        if (rawFd < 0) {
+            throw new IllegalArgumentException("parcel file descriptor is invalid");
+        }
+        return "/proc/self/fd/" + rawFd;
+    }
+
+    /** 把普通 FileDescriptor 转为 /proc/self/fd 路径。 */
+    private String resolveFileDescriptorDataSource(FileDescriptor fd) {
+        int rawFd = readRawFileDescriptor(fd);
+        if (rawFd < 0) {
+            throw new IllegalArgumentException("file descriptor is invalid");
+        }
+        return "/proc/self/fd/" + rawFd;
+    }
+
+    /** 通过 Android/Java 常见字段读取原始 fd 编号。 */
+    private int readRawFileDescriptor(FileDescriptor fd) {
+        try {
+            Method getIntMethod = FileDescriptor.class.getDeclaredMethod("getInt$");
+            getIntMethod.setAccessible(true);
+            Object value = getIntMethod.invoke(fd);
+            if (value instanceof Integer) {
+                return (Integer) value;
+            }
+        } catch (Exception ignored) {
+            // 不同 Android/Java 版本可能没有 getInt$，继续尝试 descriptor 字段。
+        }
+
+        try {
+            Field descriptorField = FileDescriptor.class.getDeclaredField("descriptor");
+            descriptorField.setAccessible(true);
+            return descriptorField.getInt(fd);
+        } catch (Exception e) {
+            throw new UnsupportedOperationException("cannot read raw file descriptor", e);
+        }
+    }
+
+    /** 将自定义数据源复制到文件，作为当前阶段的简单可维护实现。 */
+    private void copyCustomDataSourceToFile(ECHMediaDataSource dataSource, File cacheFile)
+            throws IOException {
+        File parentDir = cacheFile.getParentFile();
+        if (parentDir != null && !parentDir.exists() && !parentDir.mkdirs()) {
+            throw new IOException("cannot create cache dir: " + parentDir.getAbsolutePath());
+        }
+
+        try {
+            long position = 0L;
+            long size = dataSource.getSize();
+            byte[] buffer = new byte[64 * 1024];
+            try (FileOutputStream outputStream = new FileOutputStream(cacheFile, false)) {
+                while (size < 0 || position < size) {
+                    int maxRead = size < 0
+                            ? buffer.length
+                            : (int) Math.min(buffer.length, size - position);
+                    int readSize = dataSource.readAt(position, buffer, 0, maxRead);
+                    if (readSize <= 0) {
+                        break;
+                    }
+                    outputStream.write(buffer, 0, readSize);
+                    position += readSize;
+                }
+                outputStream.flush();
+            }
+        } finally {
+            dataSource.close();
+        }
+    }
+
+    /** 关闭当前播放器持有的 content Uri fd。 */
+    private void closeCurrentParcelFileDescriptor() {
+        if (currentParcelFileDescriptor == null) {
+            return;
+        }
+        try {
+            currentParcelFileDescriptor.close();
+        } catch (IOException ignored) {
+            // reset/release 阶段忽略关闭失败，避免掩盖主流程状态。
+        } finally {
+            currentParcelFileDescriptor = null;
+        }
     }
 
     /** 保存并下发当前数据源 headers。 */
