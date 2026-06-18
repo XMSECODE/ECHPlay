@@ -161,6 +161,51 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         }
     }
 
+    /** 缓存统计快照。 */
+    public static class CacheStats {
+        /** 是否启用缓存。 */
+        public final boolean cacheEnabled;
+        /** 缓存目录路径。 */
+        public final String cacheDirectory;
+        /** 缓存容量上限，单位字节。 */
+        public final long maxCacheBytes;
+        /** 累计向前缓存字节估算。 */
+        public final long forwardsBytes;
+        /** 累计向后缓存字节估算。 */
+        public final long backwardsBytes;
+        /** 缓存容量估算。 */
+        public final long capacityBytes;
+        /** 累计网络读取字节数。 */
+        public final long trafficBytes;
+        /** 当前网络读取速度，单位字节/秒。 */
+        public final long tcpSpeedBytesPerSecond;
+        /** 最近一次 seek 加载耗时，单位毫秒。 */
+        public final long latestSeekLoadDurationMs;
+
+        /** 创建缓存统计快照。 */
+        public CacheStats(
+                boolean cacheEnabled,
+                String cacheDirectory,
+                long maxCacheBytes,
+                long forwardsBytes,
+                long backwardsBytes,
+                long capacityBytes,
+                long trafficBytes,
+                long tcpSpeedBytesPerSecond,
+                long latestSeekLoadDurationMs) {
+
+            this.cacheEnabled = cacheEnabled;
+            this.cacheDirectory = cacheDirectory == null ? "" : cacheDirectory;
+            this.maxCacheBytes = maxCacheBytes;
+            this.forwardsBytes = forwardsBytes;
+            this.backwardsBytes = backwardsBytes;
+            this.capacityBytes = capacityBytes;
+            this.trafficBytes = trafficBytes;
+            this.tcpSpeedBytesPerSecond = tcpSpeedBytesPerSecond;
+            this.latestSeekLoadDurationMs = latestSeekLoadDurationMs;
+        }
+    }
+
     /**
      * 媒体信息快照，用于展示容器、时长、码率和最佳音视频流摘要。
      */
@@ -457,6 +502,12 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         boolean onMediaCodecSelect(ECHPlayer player, String mimeType, String codecName);
     }
 
+    /** Native invoke 风格事件监听器，用于对齐 ijkplayer 的扩展事件入口。 */
+    public interface OnNativeInvokeListener {
+        /** 返回 true 表示事件已处理。 */
+        boolean onNativeInvoke(ECHPlayer player, String event, Map<String, String> values);
+    }
+
     /** RTSP 走 TCP 传输。 */
     public static final int RTSP_TRANSPORT_TCP = 0;
     /** RTSP 走 UDP 传输。 */
@@ -529,6 +580,12 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     public static final int PROP_INT64_ASYNC_STATISTIC_BUF_CAPACITY = 20203;
     /** 累计网络读取字节数属性。 */
     public static final int PROP_INT64_TRAFFIC_STATISTIC_BYTE_COUNT = 20204;
+    /** 缓存文件向前写入字节数属性。 */
+    public static final int PROP_INT64_CACHE_FILE_FORWARDS = 20205;
+    /** 缓存文件当前位置属性。 */
+    public static final int PROP_INT64_CACHE_FILE_POS = 20206;
+    /** 缓存物理写入位置属性。 */
+    public static final int PROP_INT64_CACHE_PHYSICAL_POS = 20207;
     /** 最近一次 seek 耗时属性，单位毫秒。 */
     public static final int PROP_INT64_LATEST_SEEK_LOAD_DURATION = 20300;
     /** 解码器未知。 */
@@ -598,6 +655,12 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     public static final String OPTION_RECONNECT_INTERVAL_MS = "reconnect_interval_ms";
     /** 播放速度 option 名称。 */
     public static final String OPTION_PLAYBACK_SPEED = "playback_speed";
+    /** 本地缓存开关 option 名称。 */
+    public static final String OPTION_CACHE_ENABLE = "cache_enable";
+    /** 本地缓存目录 option 名称。 */
+    public static final String OPTION_CACHE_DIR = "cache_dir";
+    /** 本地缓存容量上限 option 名称，单位字节。 */
+    public static final String OPTION_CACHE_MAX_BYTES = "cache_max_bytes";
     /** 精确 seek 开关 option 名称，1 开启，0 关闭。 */
     public static final String OPTION_ACCURATE_SEEK = "accurate_seek";
     /** 缓冲开始水位 option 名称，单位百分比。 */
@@ -655,6 +718,8 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     private OnTimedTextListener onTimedTextListener;
     /** MediaCodec 选择监听器。 */
     private OnMediaCodecSelectListener onMediaCodecSelectListener;
+    /** Native invoke 风格事件监听器。 */
+    private OnNativeInvokeListener onNativeInvokeListener;
     /** 当前显示目标 SurfaceHolder。 */
     private SurfaceHolder displayHolder;
     /** 当前视频宽度。 */
@@ -695,6 +760,12 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     private float audioDelayMs = 0.0f;
     /** 当前是否已经获得音频焦点。 */
     private boolean audioFocusGranted = false;
+    /** 是否启用本地缓存配置。 */
+    private boolean cacheEnabled = false;
+    /** 本地缓存目录。 */
+    private String cacheDirectory = "";
+    /** 本地缓存容量上限，单位字节。 */
+    private long maxCacheBytes = 0L;
     /** 当前选中视频轨道 stream index。 */
     private int selectedVideoTrack = -1;
     /** 当前选中音频轨道 stream index。 */
@@ -809,6 +880,11 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     /** 设置 MediaCodec 选择监听器。 */
     public synchronized void setOnMediaCodecSelectListener(OnMediaCodecSelectListener listener) {
         onMediaCodecSelectListener = listener;
+    }
+
+    /** 设置 Native invoke 风格事件监听器。 */
+    public synchronized void setOnNativeInvokeListener(OnNativeInvokeListener listener) {
+        onNativeInvokeListener = listener;
     }
 
     /** 设置播放数据源。 */
@@ -1002,6 +1078,22 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         return reconnectCount;
     }
 
+    /** 立即尝试重连当前 RTSP 数据源。 */
+    public synchronized boolean reconnectImmediately() {
+        checkReleased();
+        if (currentDataSource == null || currentDataSource.length() == 0) {
+            return false;
+        }
+        boolean oldReconnectEnabled = reconnectEnabled;
+        int oldReconnectMaxCount = reconnectMaxCount;
+        reconnectEnabled = true;
+        reconnectMaxCount = Math.max(1, reconnectMaxCount);
+        boolean started = startReconnectIfNeededLocked(ERROR_NETWORK_TIMEOUT, "manual reconnect");
+        reconnectEnabled = oldReconnectEnabled;
+        reconnectMaxCount = oldReconnectMaxCount;
+        return started;
+    }
+
     /** 获取当前播放统计快照。 */
     public synchronized PlaybackStats getPlaybackStats() {
         checkReleased();
@@ -1020,6 +1112,25 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
                 lastPrepareCostMs,
                 firstFrameCostMs,
                 System.currentTimeMillis()
+        );
+    }
+
+    /** 获取缓存统计快照。 */
+    public synchronized CacheStats getCacheStats() {
+        checkReleased();
+        long trafficBytes = nativeGetReadBytes(nativeHandle);
+        long forwardsBytes = cacheEnabled ? trafficBytes : 0L;
+        long capacityBytes = maxCacheBytes > 0L ? maxCacheBytes : forwardsBytes;
+        return new CacheStats(
+                cacheEnabled,
+                cacheDirectory,
+                maxCacheBytes,
+                0L,
+                forwardsBytes,
+                capacityBytes,
+                trafficBytes,
+                nativeGetReadSpeedBytesPerSecond(nativeHandle),
+                latestSeekLoadDurationMs
         );
     }
 
@@ -1181,9 +1292,15 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
             case PROP_INT64_LATEST_SEEK_LOAD_DURATION:
                 return latestSeekLoadDurationMs >= 0L ? latestSeekLoadDurationMs : defaultValue;
             case PROP_INT64_ASYNC_STATISTIC_BUF_BACKWARDS:
-            case PROP_INT64_ASYNC_STATISTIC_BUF_FORWARDS:
-            case PROP_INT64_ASYNC_STATISTIC_BUF_CAPACITY:
                 return defaultValue;
+            case PROP_INT64_ASYNC_STATISTIC_BUF_FORWARDS:
+                return cacheEnabled ? nativeGetReadBytes(nativeHandle) : defaultValue;
+            case PROP_INT64_ASYNC_STATISTIC_BUF_CAPACITY:
+                return maxCacheBytes > 0L ? maxCacheBytes : defaultValue;
+            case PROP_INT64_CACHE_FILE_FORWARDS:
+            case PROP_INT64_CACHE_FILE_POS:
+            case PROP_INT64_CACHE_PHYSICAL_POS:
+                return cacheEnabled ? nativeGetReadBytes(nativeHandle) : 0L;
             default:
                 return defaultValue;
         }
@@ -1273,6 +1390,16 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         if (OPTION_PLAYBACK_SPEED.equals(name)) {
             setSpeed(value / 1000.0f);
             rememberLongOption(category, name, value);
+            return true;
+        }
+        if (OPTION_CACHE_ENABLE.equals(name)) {
+            cacheEnabled = value != 0;
+            rememberLongOption(category, name, cacheEnabled ? 1L : 0L);
+            return true;
+        }
+        if (OPTION_CACHE_MAX_BYTES.equals(name)) {
+            maxCacheBytes = Math.max(0L, value);
+            rememberLongOption(category, name, maxCacheBytes);
             return true;
         }
         if (OPTION_ACCURATE_SEEK.equals(name)) {
@@ -1365,6 +1492,23 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
                 return false;
             }
         }
+        if (OPTION_CACHE_ENABLE.equals(name)) {
+            cacheEnabled = parseBooleanOption(value);
+            rememberStringOption(category, name, value);
+            return true;
+        }
+        if (OPTION_CACHE_DIR.equals(name)) {
+            cacheDirectory = value == null ? "" : value;
+            rememberStringOption(category, name, cacheDirectory);
+            return true;
+        }
+        if (OPTION_CACHE_MAX_BYTES.equals(name)) {
+            try {
+                return setOption(category, name, Long.parseLong(value));
+            } catch (NumberFormatException ignored) {
+                return false;
+            }
+        }
         if (OPTION_ACCURATE_SEEK.equals(name)) {
             boolean enable = "1".equals(value) || "true".equalsIgnoreCase(value);
             accurateSeekEnabled = enable;
@@ -1425,6 +1569,9 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
                 || OPTION_RECONNECT_MAX_COUNT.equals(name)
                 || OPTION_RECONNECT_INTERVAL_MS.equals(name)
                 || OPTION_PLAYBACK_SPEED.equals(name)
+                || OPTION_CACHE_ENABLE.equals(name)
+                || OPTION_CACHE_DIR.equals(name)
+                || OPTION_CACHE_MAX_BYTES.equals(name)
                 || OPTION_ACCURATE_SEEK.equals(name)
                 || OPTION_BUFFERING_START_PERCENT.equals(name)
                 || OPTION_BUFFERING_END_PERCENT.equals(name)
@@ -1638,6 +1785,9 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         audioDelayMs = 0.0f;
         audioFocusGranted = false;
         audioFocusRequest = null;
+        cacheEnabled = false;
+        cacheDirectory = "";
+        maxCacheBytes = 0L;
         selectedVideoTrack = -1;
         selectedAudioTrack = -1;
         selectedTimedTextTrack = -1;
@@ -2040,6 +2190,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
             recordingState = RecordingState.IDLE;
             audioFocusGranted = false;
             audioFocusRequest = null;
+            cacheEnabled = false;
             resetPlaybackTiming();
             resetVideoSize();
             latestSeekLoadDurationMs = -1L;
@@ -2203,6 +2354,23 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         if (onInfoListener != null) {
             onInfoListener.onInfo(this, infoCode, message == null ? "" : message);
         }
+        dispatchNativeInvoke("info", "code", String.valueOf(infoCode), "message", message);
+    }
+
+    /** 分发 Native invoke 风格事件。 */
+    private void dispatchNativeInvoke(String event, String key, String value) {
+        dispatchNativeInvoke(event, key, value, "message", "");
+    }
+
+    /** 分发 Native invoke 风格事件。 */
+    private void dispatchNativeInvoke(String event, String key, String value, String key2, String value2) {
+        if (onNativeInvokeListener == null) {
+            return;
+        }
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put(key, value == null ? "" : value);
+        values.put(key2, value2 == null ? "" : value2);
+        onNativeInvokeListener.onNativeInvoke(this, event, Collections.unmodifiableMap(values));
     }
 
     /** 分发播放完成回调。 */
@@ -2352,6 +2520,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
                 "ECHPlayer-Reconnect"
         );
         reconnectThread.start();
+        dispatchNativeInvoke("reconnect-start", "source", dataSource, "reason", reason);
         return true;
     }
 
@@ -2510,6 +2679,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
                         + "\nattempts: " + reconnectCount + "/" + reconnectMaxCount
                         + "\nreason: " + reason
         );
+        dispatchNativeInvoke("reconnect-failed", "reason", reason);
         dispatchError(errorCode, reason);
     }
 
