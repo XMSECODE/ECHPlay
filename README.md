@@ -84,6 +84,14 @@ v1.8 测试和发版文档：
 4. `release_checklist.md`：发版前可勾选检查清单。
 5. `android/tools/smoke_check.sh`：构建、产物和可选 adb 安装启动 smoke 脚本。
 
+v2.7 SDK 发布文档：
+
+1. `v2.7_requirements_goals.md`：v2.7 多 ABI、Maven Local 和示例工程目标拆解。
+2. `v2.7_validation_report.md`：v2.7 构建、发布和 Demo 设置摘要验证记录。
+3. `abi_release_status.md`：记录各 ABI 的真实发布状态。
+4. `github_release_template.md`：GitHub Release 说明模板。
+5. `android/tools/publish_maven_local.sh`：发布 Release AAR 到 Maven Local。
+
 ## 快速运行 Demo
 
 ```bash
@@ -97,7 +105,7 @@ Demo APK：
 android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-当前仓库可直接运行的 ABI 是 `arm64-v8a`，请优先使用 arm64 真机或模拟器。
+当前仓库可直接运行的 ABI 是 `arm64-v8a`，请优先使用 arm64 真机或模拟器。其他 ABI 的真实状态请看 `abi_release_status.md`。
 
 ## Smoke 检查
 
@@ -158,6 +166,41 @@ dependencies {
 ```
 
 注意：当前 AAR 已包含 `arm64-v8a` 的播放器 native so 和 FFmpeg so。若要运行 `armeabi-v7a` 设备，需要先补齐对应 ABI 的 FFmpeg so 并重新打 AAR。
+
+## 作为 Maven Local 集成
+
+v2.7 起可以把 Release AAR 发布到本机 Maven Local，方便外部空项目按坐标依赖：
+
+```bash
+cd android
+./tools/publish_maven_local.sh
+```
+
+发布坐标：
+
+```text
+com.echplay:echplayer:2.7.0
+```
+
+外部项目 `settings.gradle` 或根 `build.gradle` 中加入 `mavenLocal()`：
+
+```gradle
+repositories {
+    mavenLocal()
+    google()
+    mavenCentral()
+}
+```
+
+业务模块依赖：
+
+```gradle
+dependencies {
+    implementation 'com.echplay:echplayer:2.7.0'
+}
+```
+
+说明：Maven Local 产物和 AAR 一样，目前只声明 `arm64-v8a` 已支持。`armeabi-v7a`、`x86_64` 需要补齐对应 FFmpeg so 后再更新 ABI 状态。
 
 ## ECHPlayer 基础用法
 

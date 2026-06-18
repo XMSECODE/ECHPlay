@@ -16,7 +16,8 @@
 | 项目 | 当前状态 | 说明 |
 | --- | --- | --- |
 | arm64-v8a | 已通过 | 当前仓库包含 FFmpeg so，可构建 Debug / Release AAR 和 Demo APK |
-| armeabi-v7a | 待验证 | Gradle 已预留候选 ABI，当前缺少 FFmpeg so |
+| armeabi-v7a | 待补齐 | Gradle 已预留候选 ABI，当前缺少完整 FFmpeg so，不进入 AAR |
+| x86_64 | 待预研 | 当前未接入 FFmpeg so，后续用于模拟器测试 |
 | Android 8.0+ | 待验证 | 需要真机矩阵补测 |
 | Android 10+ | 待验证 | 建议作为主力验证系统 |
 | Android 13+ | 待验证 | 需要关注存储权限、Surface 和 MediaCodec 差异 |

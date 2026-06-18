@@ -13,6 +13,9 @@
 - [ ] Release AAR 包含 `jni/arm64-v8a/libechplayer.so`。
 - [ ] Release AAR 包含 FFmpeg so：`libavcodec.so`、`libavformat.so`、`libavutil.so`、`libswresample.so`、`libswscale.so`。
 - [ ] 如补齐 `armeabi-v7a`，确认对应 ABI so 已进入 AAR。
+- [ ] 执行 `cd android && ./tools/publish_maven_local.sh`。
+- [ ] Maven Local 产物 `com.echplay:echplayer:<version>` 可被外部工程依赖。
+- [ ] `abi_release_status.md` 已更新，未验证 ABI 不标为已支持。
 
 ============================================================
 二、基础播放回归
@@ -82,6 +85,8 @@
 - [ ] 验证报告已更新。
 - [ ] 兼容性矩阵已更新。
 - [ ] release checklist 如有新增能力已更新。
+- [ ] `github_release_template.md` 已按当前版本填写或复用。
+- [ ] FFmpeg、ijkplayer 参考源码和第三方库 License 说明已检查。
 - [ ] 所有代码已提交，提交信息包含中文和英文。
 - [ ] 当前分支已推送到服务器。
 - [ ] tag 已创建并推送。

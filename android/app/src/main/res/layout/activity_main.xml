@@ -223,6 +223,17 @@
                     android:textColor="#444444"
                     android:textSize="13sp" />
 
+                <TextView
+                    android:id="@+id/playerSettingsSummaryText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:background="#F2F4F7"
+                    android:padding="8dp"
+                    android:text="ijkplayer-like \u8bbe\u7f6e\uff1a\u5f85\u5237\u65b0"
+                    android:textColor="#333333"
+                    android:textSize="13sp" />
+
             </LinearLayout>
 
             <LinearLayout

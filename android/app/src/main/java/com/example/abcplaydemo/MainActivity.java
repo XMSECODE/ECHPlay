@@ -45,6 +45,10 @@ public class MainActivity extends AppCompatActivity {
     private static final String KEY_LAST_DATA_SOURCE = "last_data_source";
     /** RTSP 传输方式缓存 key。 */
     private static final String KEY_RTSP_TRANSPORT = "rtsp_transport";
+    /** 渲染模式缓存 key。 */
+    private static final String KEY_RENDER_MODE = "render_mode";
+    /** 解码模式缓存 key。 */
+    private static final String KEY_DECODE_MODE = "decode_mode";
     /** 默认网络播放地址。 */
     private static final String DEFAULT_NETWORK_SOURCE = "rtsp://120.24.161.118:8554/live";
     /** 截图目录名。 */
@@ -128,6 +132,8 @@ public class MainActivity extends AppCompatActivity {
     private TextView durationTimeText;
     /** 当前解码状态文本。 */
     private TextView decodeStatusText;
+    /** ijkplayer-like 设置摘要文本。 */
+    private TextView playerSettingsSummaryText;
     /** 日志文本。 */
     private TextView sampleText;
     /** Java 播放器实例。 */
@@ -197,6 +203,7 @@ public class MainActivity extends AppCompatActivity {
         currentTimeText = findViewById(R.id.currentTimeText);
         durationTimeText = findViewById(R.id.durationTimeText);
         decodeStatusText = findViewById(R.id.decodeStatusText);
+        playerSettingsSummaryText = findViewById(R.id.playerSettingsSummaryText);
         sampleText = findViewById(R.id.sample_text);
 
         restorePlayMode();
@@ -205,24 +212,34 @@ public class MainActivity extends AppCompatActivity {
         currentTimeText.setText(formatTime(0));
         durationTimeText.setText(formatTime(0));
         updateDecodeStatusUi();
+        updateSettingsSummaryUi();
         updateRecordButtonState();
 
         modeGroup.setOnCheckedChangeListener((group, checkedId) -> {
             persistPlayMode();
             updateModeUi();
+            updateSettingsSummaryUi();
         });
         renderModeGroup.setOnCheckedChangeListener((group, checkedId) -> {
+            persistPlayMode();
+            updateSettingsSummaryUi();
             if (player != null) {
                 player.setRenderMode(resolveRenderMode());
                 appendLog("renderMode: " + renderModeToText(player.getRenderMode()));
             }
         });
         decodeModeGroup.setOnCheckedChangeListener((group, checkedId) -> {
+            persistPlayMode();
+            updateSettingsSummaryUi();
             if (player != null) {
                 player.setDecodeMode(resolveDecodeMode());
                 appendLog("decodeMode: " + decodeModeToText(player.getDecodeMode()));
                 updateDecodeStatusUi();
             }
+        });
+        transportGroup.setOnCheckedChangeListener((group, checkedId) -> {
+            persistPlayMode();
+            updateSettingsSummaryUi();
         });
 
         openButton.setOnClickListener(v -> tryStartPlayback());
@@ -424,6 +441,8 @@ public class MainActivity extends AppCompatActivity {
         text.append("Decode mode: ");
         text.append(decodeModeToText(resolveDecodeMode()));
         text.append("\n\n");
+        text.append(buildSettingsSummaryText());
+        text.append("\n\n");
         sampleText.setText(text.toString());
 
         int playMode = modeGroup.getCheckedRadioButtonId() == R.id.modeLocalButton
@@ -456,6 +475,7 @@ public class MainActivity extends AppCompatActivity {
             appendLog(formatMediaMeta(player.getMediaMeta()));
             appendLog(formatPropertyInfo(player));
             appendLog(formatOptionSnapshots(player));
+            appendLog(buildSettingsSummaryText());
 
             durationMs = Math.max(0, player.getDuration());
             durationTimeText.setText(formatTime(durationMs));
@@ -746,6 +766,24 @@ public class MainActivity extends AppCompatActivity {
             transportTcpButton.setChecked(true);
         }
 
+        int renderMode = preferences.getInt(KEY_RENDER_MODE, ECHPlayer.RENDER_MODE_AUTO);
+        if (renderMode == ECHPlayer.RENDER_MODE_OPENGL) {
+            renderModeOpenGlButton.setChecked(true);
+        } else if (renderMode == ECHPlayer.RENDER_MODE_NATIVE_WINDOW) {
+            renderModeNativeButton.setChecked(true);
+        } else {
+            renderModeAutoButton.setChecked(true);
+        }
+
+        int decodeMode = preferences.getInt(KEY_DECODE_MODE, ECHPlayer.DECODE_MODE_AUTO);
+        if (decodeMode == ECHPlayer.DECODE_MODE_SOFTWARE) {
+            decodeModeSoftwareButton.setChecked(true);
+        } else if (decodeMode == ECHPlayer.DECODE_MODE_MEDIACODEC) {
+            decodeModeMediaCodecButton.setChecked(true);
+        } else {
+            decodeModeAutoButton.setChecked(true);
+        }
+
         String localPath = preferences.getString(KEY_LOCAL_FILE_PATH, "");
         localPathInput.setText(localPath);
         localPathInput.setSelection(localPath.length());
@@ -757,15 +795,19 @@ public class MainActivity extends AppCompatActivity {
         int mode = modeGroup.getCheckedRadioButtonId() == R.id.modeLocalButton
                 ? MODE_LOCAL
                 : MODE_NETWORK;
-        preferences.edit().putInt(KEY_PLAY_MODE, mode).apply();
+        SharedPreferences.Editor editor = preferences.edit();
+        editor.putInt(KEY_PLAY_MODE, mode);
 
         String networkInput = dataSourceInput.getText().toString().trim();
         if (!networkInput.isEmpty()) {
-            preferences.edit().putString(KEY_LAST_DATA_SOURCE, networkInput).apply();
+            editor.putString(KEY_LAST_DATA_SOURCE, networkInput);
         }
         String localPath = localPathInput.getText().toString().trim();
-        preferences.edit().putString(KEY_LOCAL_FILE_PATH, localPath).apply();
-        preferences.edit().putInt(KEY_RTSP_TRANSPORT, resolveRtspTransport()).apply();
+        editor.putString(KEY_LOCAL_FILE_PATH, localPath);
+        editor.putInt(KEY_RTSP_TRANSPORT, resolveRtspTransport());
+        editor.putInt(KEY_RENDER_MODE, resolveRenderMode());
+        editor.putInt(KEY_DECODE_MODE, resolveDecodeMode());
+        editor.apply();
     }
 
     /** 根据当前播放模式切换输入区域的显示/隐藏。 */
@@ -943,6 +985,34 @@ public class MainActivity extends AppCompatActivity {
         builder.append("  首帧：");
         builder.append(formatCostMs(stats.firstFrameCostMs));
         decodeStatusText.setText(builder.toString());
+    }
+
+    /** 更新 ijkplayer-like 设置摘要，方便 Demo 作为发版示例工程使用。 */
+    private void updateSettingsSummaryUi() {
+        if (playerSettingsSummaryText == null) {
+            return;
+        }
+        playerSettingsSummaryText.setText(buildSettingsSummaryText());
+    }
+
+    /** 生成当前播放器配置摘要。 */
+    private String buildSettingsSummaryText() {
+        StringBuilder builder = new StringBuilder();
+        builder.append("ijkplayer-like 设置");
+        builder.append("\n数据源：");
+        builder.append(modeGroup.getCheckedRadioButtonId() == R.id.modeLocalButton
+                ? "本地文件"
+                : "网络 URL");
+        builder.append("  RTSP：");
+        builder.append(resolveRtspTransport() == ECHPlayer.RTSP_TRANSPORT_UDP ? "UDP" : "TCP");
+        builder.append("  渲染：");
+        builder.append(renderModeToText(resolveRenderMode()));
+        builder.append("  解码：");
+        builder.append(decodeModeToText(resolveDecodeMode()));
+        builder.append("\n网络默认：timeout=5s, rw_timeout=5s, buffer_size=1024000");
+        builder.append("\nRTSP 默认：max_delay=500ms, reconnect=3次/2s");
+        builder.append("\n发布 ABI：arm64-v8a 已打包，其他 ABI 需补齐 FFmpeg so");
+        return builder.toString();
     }
 
     /** 格式化媒体信息，方便 Demo 日志阅读。 */

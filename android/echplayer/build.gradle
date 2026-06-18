@@ -1,6 +1,12 @@
 plugins {
     alias(libs.plugins.android.library)
+    id 'maven-publish'
 }
+
+// SDK 发布坐标，Maven Local 和后续远端仓库都复用这组信息。
+def publishedGroupId = 'com.echplay'
+def publishedArtifactId = 'echplayer'
+def publishedVersion = '2.7.0'
 
 // 候选 ABI 列表。armeabi-v7a 已预留，补齐对应 FFmpeg so 后会自动进入打包。
 def candidateNativeAbis = ['arm64-v8a', 'armeabi-v7a']
@@ -23,7 +29,7 @@ android {
 
     defaultConfig {
         minSdk 28
-        versionName "1.2.0"
+        versionName publishedVersion
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles "consumer-rules.pro"
@@ -59,10 +65,47 @@ android {
             version '3.22.1'
         }
     }
+
+    publishing {
+        singleVariant("release") {
+            withSourcesJar()
+        }
+    }
 }
 
 dependencies {
     testImplementation libs.junit
     androidTestImplementation libs.ext.junit
     androidTestImplementation libs.espresso.core
+}
+
+afterEvaluate {
+    publishing {
+        publications {
+            release(MavenPublication) {
+                from components.release
+                groupId = publishedGroupId
+                artifactId = publishedArtifactId
+                version = publishedVersion
+
+                pom {
+                    name = 'ECHPlayer'
+                    description = 'Android FFmpeg and MediaCodec player library'
+                    url = 'https://github.com/XMSECODE/ECHPlay'
+                    licenses {
+                        license {
+                            name = 'LGPL-2.1-or-later for bundled FFmpeg binaries'
+                            url = 'https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html'
+                        }
+                    }
+                    developers {
+                        developer {
+                            id = 'echplay'
+                            name = 'ECHPlay Team'
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
