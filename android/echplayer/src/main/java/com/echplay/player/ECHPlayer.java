@@ -3,7 +3,9 @@ package com.echplay.player;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.media.AudioFormat;
+import android.media.AudioFocusRequest;
 import android.media.AudioManager;
+import android.media.AudioAttributes;
 import android.media.AudioTrack;
 import android.net.Uri;
 import android.os.ParcelFileDescriptor;
@@ -472,6 +474,8 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     public static final int PROP_FLOAT_PLAYBACK_RATE = 10003;
     /** 丢帧率属性。 */
     public static final int PROP_FLOAT_DROP_FRAME_RATE = 10007;
+    /** 音频延迟属性，单位毫秒。 */
+    public static final int PROP_FLOAT_AUDIO_DELAY = 10008;
     /** 当前选中视频流属性。 */
     public static final int PROP_INT64_SELECTED_VIDEO_STREAM = 20001;
     /** 当前选中音频流属性。 */
@@ -573,6 +577,8 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     public static final String OPTION_RECONNECT_MAX_COUNT = "reconnect_max_count";
     /** 重连间隔 option 名称，单位毫秒。 */
     public static final String OPTION_RECONNECT_INTERVAL_MS = "reconnect_interval_ms";
+    /** 播放速度 option 名称。 */
+    public static final String OPTION_PLAYBACK_SPEED = "playback_speed";
     /** 精确 seek 开关 option 名称，1 开启，0 关闭。 */
     public static final String OPTION_ACCURATE_SEEK = "accurate_seek";
     /** 缓冲开始水位 option 名称，单位百分比。 */
@@ -662,6 +668,26 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     private float leftVolume = 1.0f;
     /** 右声道音量，范围 0 到 1。 */
     private float rightVolume = 1.0f;
+    /** 当前是否静音。 */
+    private boolean muted = false;
+    /** 当前期望播放速度。 */
+    private float playbackSpeed = 1.0f;
+    /** 最近一次估算音频延迟，单位毫秒。 */
+    private float audioDelayMs = 0.0f;
+    /** 当前是否已经获得音频焦点。 */
+    private boolean audioFocusGranted = false;
+    /** Android O 及以上使用的音频焦点请求对象。 */
+    private AudioFocusRequest audioFocusRequest;
+    /** 音频焦点变化监听器。 */
+    private final AudioManager.OnAudioFocusChangeListener audioFocusChangeListener =
+            focusChange -> {
+                if (focusChange == AudioManager.AUDIOFOCUS_LOSS
+                        || focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
+                    setMutedInternal(true);
+                } else if (focusChange == AudioManager.AUDIOFOCUS_GAIN) {
+                    setMutedInternal(false);
+                }
+            };
     /** 是否循环播放。 */
     private boolean looping = false;
     /** 是否开启自动重连。 */
@@ -1089,12 +1115,14 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
             case PROP_FLOAT_VIDEO_OUTPUT_FRAMES_PER_SECOND:
                 return (float) nativeGetRenderFps(nativeHandle);
             case PROP_FLOAT_PLAYBACK_RATE:
-                return 1.0f;
+                return playbackSpeed;
             case PROP_FLOAT_DROP_FRAME_RATE:
                 long decoded = nativeGetDecodedFrameCount(nativeHandle);
                 long dropped = nativeGetDroppedFrameCount(nativeHandle);
                 long total = decoded + dropped;
                 return total <= 0 ? 0.0f : (float) dropped / (float) total;
+            case PROP_FLOAT_AUDIO_DELAY:
+                return audioDelayMs;
             default:
                 return defaultValue;
         }
@@ -1156,6 +1184,11 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         }
         if (OPTION_RECONNECT_INTERVAL_MS.equals(name)) {
             setReconnectConfig(reconnectMaxCount, value);
+            rememberLongOption(category, name, value);
+            return true;
+        }
+        if (OPTION_PLAYBACK_SPEED.equals(name)) {
+            setSpeed(value / 1000.0f);
             rememberLongOption(category, name, value);
             return true;
         }
@@ -1240,6 +1273,15 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
             rememberStringOption(category, name, value);
             return true;
         }
+        if (OPTION_PLAYBACK_SPEED.equals(name)) {
+            try {
+                setSpeed(Float.parseFloat(value));
+                rememberStringOption(category, name, value);
+                return true;
+            } catch (NumberFormatException ignored) {
+                return false;
+            }
+        }
         if (OPTION_ACCURATE_SEEK.equals(name)) {
             boolean enable = "1".equals(value) || "true".equalsIgnoreCase(value);
             accurateSeekEnabled = enable;
@@ -1299,6 +1341,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
                 || OPTION_RECONNECT.equals(name)
                 || OPTION_RECONNECT_MAX_COUNT.equals(name)
                 || OPTION_RECONNECT_INTERVAL_MS.equals(name)
+                || OPTION_PLAYBACK_SPEED.equals(name)
                 || OPTION_ACCURATE_SEEK.equals(name)
                 || OPTION_BUFFERING_START_PERCENT.equals(name)
                 || OPTION_BUFFERING_END_PERCENT.equals(name)
@@ -1507,6 +1550,11 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         displayHolder = null;
         leftVolume = 1.0f;
         rightVolume = 1.0f;
+        muted = false;
+        playbackSpeed = 1.0f;
+        audioDelayMs = 0.0f;
+        audioFocusGranted = false;
+        audioFocusRequest = null;
         looping = false;
         latestSeekLoadDurationMs = -1L;
         accurateSeekEnabled = false;
@@ -1627,6 +1675,97 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         this.leftVolume = normalizeVolume(leftVolume);
         this.rightVolume = normalizeVolume(rightVolume);
         applyAudioTrackVolume();
+    }
+
+    /** 设置是否静音。 */
+    @Override
+    public synchronized void setMuted(boolean muted) {
+        checkReleased();
+        this.muted = muted;
+        applyAudioTrackVolume();
+    }
+
+    /** 返回当前是否静音。 */
+    @Override
+    public synchronized boolean isMuted() {
+        return muted;
+    }
+
+    /** 设置播放速度，当前版本先记录期望值。 */
+    @Override
+    public synchronized void setSpeed(float speed) {
+        checkReleased();
+        if (Float.isNaN(speed) || Float.isInfinite(speed)) {
+            throw new IllegalArgumentException("speed is invalid");
+        }
+        playbackSpeed = Math.max(0.25f, Math.min(4.0f, speed));
+        applyAudioTrackSpeed();
+    }
+
+    /** 返回当前期望播放速度。 */
+    @Override
+    public synchronized float getSpeed() {
+        return playbackSpeed;
+    }
+
+    /** 请求音频焦点，适合 Activity 在 start 前调用。 */
+    public synchronized boolean requestAudioFocus(Context context) {
+        checkReleased();
+        if (context == null) {
+            throw new IllegalArgumentException("context is null");
+        }
+        AudioManager audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+        if (audioManager == null) {
+            audioFocusGranted = false;
+            return false;
+        }
+
+        int result;
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            AudioAttributes audioAttributes = new AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                    .build();
+            audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                    .setAudioAttributes(audioAttributes)
+                    .setOnAudioFocusChangeListener(audioFocusChangeListener)
+                    .build();
+            result = audioManager.requestAudioFocus(audioFocusRequest);
+        } else {
+            result = audioManager.requestAudioFocus(
+                    audioFocusChangeListener,
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.AUDIOFOCUS_GAIN
+            );
+        }
+
+        audioFocusGranted = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
+        return audioFocusGranted;
+    }
+
+    /** 释放音频焦点，适合 Activity 停止播放或退出时调用。 */
+    public synchronized void abandonAudioFocus(Context context) {
+        if (context == null) {
+            return;
+        }
+        AudioManager audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+        if (audioManager == null) {
+            audioFocusGranted = false;
+            return;
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O
+                && audioFocusRequest != null) {
+            audioManager.abandonAudioFocusRequest(audioFocusRequest);
+        } else {
+            audioManager.abandonAudioFocus(audioFocusChangeListener);
+        }
+        audioFocusGranted = false;
+        audioFocusRequest = null;
+    }
+
+    /** 返回当前是否已获得音频焦点。 */
+    public synchronized boolean isAudioFocusGranted() {
+        return audioFocusGranted;
     }
 
     /** 设置是否循环播放。 */
@@ -1810,6 +1949,8 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
             playing = false;
             paused = false;
             recordingState = RecordingState.IDLE;
+            audioFocusGranted = false;
+            audioFocusRequest = null;
             resetPlaybackTiming();
             resetVideoSize();
             latestSeekLoadDurationMs = -1L;
@@ -1840,6 +1981,9 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         );
 
         int bufferSize = Math.max(minBufferSize, sampleRate * channels * 2);
+        audioDelayMs = sampleRate <= 0 || channels <= 0
+                ? 0.0f
+                : (bufferSize * 1000.0f) / (sampleRate * channels * 2.0f);
 
         audioTrack = new AudioTrack(
                 AudioManager.STREAM_MUSIC,
@@ -1851,6 +1995,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         );
 
         applyAudioTrackVolume();
+        applyAudioTrackSpeed();
         audioTrack.play();
         if (!audioRenderingStarted) {
             audioRenderingStarted = true;
@@ -2559,7 +2704,31 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         if (audioTrack == null) {
             return;
         }
-        audioTrack.setStereoVolume(leftVolume, rightVolume);
+        float appliedLeftVolume = muted ? 0.0f : leftVolume;
+        float appliedRightVolume = muted ? 0.0f : rightVolume;
+        audioTrack.setStereoVolume(appliedLeftVolume, appliedRightVolume);
+    }
+
+    /** 安全设置静音状态，允许音频焦点回调在任意生命周期进入。 */
+    private synchronized void setMutedInternal(boolean muted) {
+        if (released || nativeHandle == 0) {
+            return;
+        }
+        this.muted = muted;
+        applyAudioTrackVolume();
+    }
+
+    /** 把当前速度设置应用到 AudioTrack。 */
+    private void applyAudioTrackSpeed() {
+        if (audioTrack == null || audioTrack.getPlaybackRate() <= 0) {
+            return;
+        }
+        int targetRate = Math.max(1, Math.round(audioTrack.getSampleRate() * playbackSpeed));
+        try {
+            audioTrack.setPlaybackRate(targetRate);
+        } catch (IllegalArgumentException ignored) {
+            // 部分设备不接受过高或过低采样率，保留期望速度，后续 native pipeline 再深接。
+        }
     }
 
     /** 从 native 刷新当前实际解码信息。 */

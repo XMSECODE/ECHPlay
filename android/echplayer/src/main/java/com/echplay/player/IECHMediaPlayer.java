@@ -78,6 +78,18 @@ public interface IECHMediaPlayer {
     /** 设置左右声道音量，范围建议为 0 到 1。 */
     void setVolume(float leftVolume, float rightVolume);
 
+    /** 设置是否静音。 */
+    void setMuted(boolean muted);
+
+    /** 返回当前是否静音。 */
+    boolean isMuted();
+
+    /** 设置播放速度，当前版本记录期望值，后续 native 音视频时钟继续接入。 */
+    void setSpeed(float speed);
+
+    /** 返回当前期望播放速度。 */
+    float getSpeed();
+
     /** 设置是否循环播放。 */
     void setLooping(boolean looping);
 
