@@ -92,6 +92,14 @@ v2.7 SDK 发布文档：
 4. `github_release_template.md`：GitHub Release 说明模板。
 5. `android/tools/publish_maven_local.sh`：发布 Release AAR 到 Maven Local。
 
+v2.8 测试体系文档：
+
+1. `v2.8_requirements_goals.md`：v2.8 测试矩阵和稳定性目标拆解。
+2. `v2.8_test_matrix.md`：协议、播放控制、截图、录制、长播测试矩阵。
+3. `v2.8_validation_report.md`：v2.8 构建、脚本和自动回归入口验证记录。
+4. `long_play_test_template.md`：2 小时长播测试记录模板。
+5. `android/tools/collect_diagnostics.sh`：adb 诊断信息收集脚本。
+
 ## 快速运行 Demo
 
 ```bash
@@ -179,7 +187,7 @@ cd android
 发布坐标：
 
 ```text
-com.echplay:echplayer:2.7.0
+com.echplay:echplayer:2.8.0
 ```
 
 外部项目 `settings.gradle` 或根 `build.gradle` 中加入 `mavenLocal()`：
@@ -196,11 +204,35 @@ repositories {
 
 ```gradle
 dependencies {
-    implementation 'com.echplay:echplayer:2.7.0'
+    implementation 'com.echplay:echplayer:2.8.0'
 }
 ```
 
 说明：Maven Local 产物和 AAR 一样，目前只声明 `arm64-v8a` 已支持。`armeabi-v7a`、`x86_64` 需要补齐对应 FFmpeg so 后再更新 ABI 状态。
+
+## adb 半自动回归
+
+v2.8 起 Demo 支持通过 adb 参数直接指定播放源和测试动作：
+
+```bash
+adb shell am start \
+  -n com.example.abcplaydemo/.MainActivity \
+  --ez echplay_auto_play true \
+  --es echplay_source "rtsp://120.24.161.118:8554/live" \
+  --es echplay_source_mode network \
+  --es echplay_rtsp_transport tcp \
+  --es echplay_render_mode auto \
+  --es echplay_decode_mode auto \
+  --el echplay_auto_capture_delay_ms 3000 \
+  --el echplay_auto_record_duration_ms 5000
+```
+
+播放失败、崩溃或卡顿时，可以收集诊断信息：
+
+```bash
+cd android
+./tools/collect_diagnostics.sh
+```
 
 ## ECHPlayer 基础用法
 

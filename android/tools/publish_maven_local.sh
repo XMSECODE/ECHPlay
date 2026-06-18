@@ -11,4 +11,4 @@ log() {
 
 log "publish echplayer release AAR to Maven Local"
 ./gradlew :echplayer:publishReleasePublicationToMavenLocal --console=plain
-log "published com.echplay:echplayer:2.7.0"
+log "published com.echplay:echplayer:2.8.0"

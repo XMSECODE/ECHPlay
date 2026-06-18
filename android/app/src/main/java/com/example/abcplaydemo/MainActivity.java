@@ -49,6 +49,22 @@ public class MainActivity extends AppCompatActivity {
     private static final String KEY_RENDER_MODE = "render_mode";
     /** 解码模式缓存 key。 */
     private static final String KEY_DECODE_MODE = "decode_mode";
+    /** adb 自动回归：是否自动播放。 */
+    private static final String EXTRA_AUTO_PLAY = "echplay_auto_play";
+    /** adb 自动回归：播放地址。 */
+    private static final String EXTRA_SOURCE = "echplay_source";
+    /** adb 自动回归：播放模式，支持 network 或 local。 */
+    private static final String EXTRA_SOURCE_MODE = "echplay_source_mode";
+    /** adb 自动回归：RTSP 传输方式，支持 tcp 或 udp。 */
+    private static final String EXTRA_RTSP_TRANSPORT = "echplay_rtsp_transport";
+    /** adb 自动回归：渲染模式，支持 auto、opengl、native_window。 */
+    private static final String EXTRA_RENDER_MODE = "echplay_render_mode";
+    /** adb 自动回归：解码模式，支持 auto、software、mediacodec。 */
+    private static final String EXTRA_DECODE_MODE = "echplay_decode_mode";
+    /** adb 自动回归：播放后延迟多少毫秒截图。 */
+    private static final String EXTRA_AUTO_CAPTURE_DELAY_MS = "echplay_auto_capture_delay_ms";
+    /** adb 自动回归：播放后录制多少毫秒。 */
+    private static final String EXTRA_AUTO_RECORD_DURATION_MS = "echplay_auto_record_duration_ms";
     /** 默认网络播放地址。 */
     private static final String DEFAULT_NETWORK_SOURCE = "rtsp://120.24.161.118:8554/live";
     /** 截图目录名。 */
@@ -140,6 +156,12 @@ public class MainActivity extends AppCompatActivity {
     private ECHPlayer player;
     /** Surface 是否已准备完毕。 */
     private boolean demoStarted = false;
+    /** 是否存在等待 Surface 创建后执行的自动播放请求。 */
+    private boolean pendingAutoPlay = false;
+    /** 自动回归截图延迟。 */
+    private long autoCaptureDelayMs = 0L;
+    /** 自动回归录制时长。 */
+    private long autoRecordDurationMs = 0L;
     /** 用户是否正在拖动进度条。 */
     private boolean userSeeking = false;
     /** 当前媒体总时长。 */
@@ -207,6 +229,7 @@ public class MainActivity extends AppCompatActivity {
         sampleText = findViewById(R.id.sample_text);
 
         restorePlayMode();
+        applyAutomationIntent(getIntent());
         updateModeUi();
         sampleText.setText("等待 Surface 创建...");
         currentTimeText.setText(formatTime(0));
@@ -354,6 +377,12 @@ public class MainActivity extends AppCompatActivity {
 
                 demoStarted = true;
                 sampleText.setText("Surface 已创建，点击“播放”开始");
+                if (pendingAutoPlay) {
+                    pendingAutoPlay = false;
+                    appendLog("自动回归：Surface 已准备，开始播放");
+                    tryStartPlayback();
+                    scheduleAutomationActions();
+                }
             }
 
             @Override
@@ -403,6 +432,93 @@ public class MainActivity extends AppCompatActivity {
 
         persistPlayMode();
         runPlayDemo(surface, surfaceWidth, surfaceHeight);
+    }
+
+    /** 应用 adb 自动回归传入的启动参数。 */
+    private void applyAutomationIntent(Intent intent) {
+        if (intent == null) {
+            return;
+        }
+
+        String source = intent.getStringExtra(EXTRA_SOURCE);
+        String sourceMode = intent.getStringExtra(EXTRA_SOURCE_MODE);
+        if ("local".equalsIgnoreCase(sourceMode)) {
+            modeLocalButton.setChecked(true);
+            if (source != null && !source.trim().isEmpty()) {
+                localPathInput.setText(source.trim());
+            }
+        } else if (source != null && !source.trim().isEmpty()) {
+            modeRtspButton.setChecked(true);
+            dataSourceInput.setText(source.trim());
+            dataSourceInput.setSelection(dataSourceInput.getText().length());
+        }
+
+        applyAutomationRtspTransport(intent.getStringExtra(EXTRA_RTSP_TRANSPORT));
+        applyAutomationRenderMode(intent.getStringExtra(EXTRA_RENDER_MODE));
+        applyAutomationDecodeMode(intent.getStringExtra(EXTRA_DECODE_MODE));
+        autoCaptureDelayMs = Math.max(0L, intent.getLongExtra(EXTRA_AUTO_CAPTURE_DELAY_MS, 0L));
+        autoRecordDurationMs = Math.max(0L, intent.getLongExtra(EXTRA_AUTO_RECORD_DURATION_MS, 0L));
+        pendingAutoPlay = intent.getBooleanExtra(EXTRA_AUTO_PLAY, false);
+        if (pendingAutoPlay) {
+            persistPlayMode();
+            updateSettingsSummaryUi();
+        }
+    }
+
+    /** 应用自动回归传入的 RTSP 传输方式。 */
+    private void applyAutomationRtspTransport(String transport) {
+        if ("udp".equalsIgnoreCase(transport)) {
+            transportUdpButton.setChecked(true);
+        } else if ("tcp".equalsIgnoreCase(transport)) {
+            transportTcpButton.setChecked(true);
+        }
+    }
+
+    /** 应用自动回归传入的渲染模式。 */
+    private void applyAutomationRenderMode(String renderMode) {
+        if ("opengl".equalsIgnoreCase(renderMode)) {
+            renderModeOpenGlButton.setChecked(true);
+        } else if ("native_window".equalsIgnoreCase(renderMode)
+                || "native".equalsIgnoreCase(renderMode)) {
+            renderModeNativeButton.setChecked(true);
+        } else if ("auto".equalsIgnoreCase(renderMode)) {
+            renderModeAutoButton.setChecked(true);
+        }
+    }
+
+    /** 应用自动回归传入的解码模式。 */
+    private void applyAutomationDecodeMode(String decodeMode) {
+        if ("software".equalsIgnoreCase(decodeMode)) {
+            decodeModeSoftwareButton.setChecked(true);
+        } else if ("mediacodec".equalsIgnoreCase(decodeMode)) {
+            decodeModeMediaCodecButton.setChecked(true);
+        } else if ("auto".equalsIgnoreCase(decodeMode)) {
+            decodeModeAutoButton.setChecked(true);
+        }
+    }
+
+    /** 安排自动回归截图和录制动作。 */
+    private void scheduleAutomationActions() {
+        if (autoCaptureDelayMs > 0L) {
+            uiHandler.postDelayed(() -> {
+                appendLog("自动回归：执行截图");
+                captureCurrentFrame();
+            }, autoCaptureDelayMs);
+        }
+        if (autoRecordDurationMs > 0L) {
+            long startDelayMs = Math.max(1_000L, autoCaptureDelayMs);
+            uiHandler.postDelayed(() -> {
+                appendLog("自动回归：开始短录制");
+                if (player != null && !player.isRecording()) {
+                    toggleRecording();
+                    uiHandler.postDelayed(() -> {
+                        appendLog("自动回归：停止短录制");
+                        stopRecordingWithLog();
+                        updateRecordButtonState();
+                    }, autoRecordDurationMs);
+                }
+            }, startDelayMs);
+        }
     }
 
     /** 运行播放器演示并开始播放。 */
@@ -834,6 +950,21 @@ public class MainActivity extends AppCompatActivity {
                 localPathInput.setText(uri.toString());
                 persistPlayMode();
             }
+        }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        applyAutomationIntent(intent);
+        updateModeUi();
+        updateSettingsSummaryUi();
+        if (pendingAutoPlay && demoStarted) {
+            pendingAutoPlay = false;
+            appendLog("自动回归：收到新的启动参数，开始播放");
+            tryStartPlayback();
+            scheduleAutomationActions();
         }
     }
 

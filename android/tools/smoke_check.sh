@@ -30,12 +30,25 @@ require_aar_entry() {
   log "aar contains $entry_name"
 }
 
+# 检查文本文件必须包含指定内容。
+require_text() {
+  local file_path="$1"
+  local pattern="$2"
+  if ! grep -Fq "$pattern" "$file_path"; then
+    printf '[smoke] missing text: %s in %s\n' "$pattern" "$file_path" >&2
+    exit 1
+  fi
+  log "text found in $file_path: $pattern"
+}
+
 log "build Debug / Release AAR and Demo APK"
 ./gradlew :echplayer:assembleDebug :echplayer:assembleRelease :app:assembleDebug -x test --console=plain
 
 DEBUG_AAR="echplayer/build/outputs/aar/echplayer-debug.aar"
 RELEASE_AAR="echplayer/build/outputs/aar/echplayer-release.aar"
 DEBUG_APK="app/build/outputs/apk/debug/app-debug.apk"
+PLAYER_API="echplayer/src/main/java/com/echplay/player/ECHPlayer.java"
+DEMO_ACTIVITY="app/src/main/java/com/example/abcplaydemo/MainActivity.java"
 
 # 检查构建产物是否生成。
 require_file "$DEBUG_AAR"
@@ -49,6 +62,20 @@ require_aar_entry "$RELEASE_AAR" "jni/arm64-v8a/libavformat.so"
 require_aar_entry "$RELEASE_AAR" "jni/arm64-v8a/libavutil.so"
 require_aar_entry "$RELEASE_AAR" "jni/arm64-v8a/libswresample.so"
 require_aar_entry "$RELEASE_AAR" "jni/arm64-v8a/libswscale.so"
+
+# 检查关键 API 和自动回归入口，避免发布时误删核心能力。
+require_text "$PLAYER_API" "captureCurrentFramePng"
+require_text "$PLAYER_API" "startRecording"
+require_text "$PLAYER_API" "setRtspTransport"
+require_text "$PLAYER_API" "getPropertyLong"
+require_text "$DEMO_ACTIVITY" "EXTRA_AUTO_PLAY"
+require_text "$DEMO_ACTIVITY" "scheduleAutomationActions"
+
+# 检查发版文档是否存在，保证代码和流程一起交付。
+require_file "../abi_release_status.md"
+require_file "../github_release_template.md"
+require_file "../v2.8_test_matrix.md"
+require_file "../v2.8_validation_report.md"
 
 if command -v adb >/dev/null 2>&1; then
   # 有 adb 设备时做安装和启动验证，没有设备则跳过。
