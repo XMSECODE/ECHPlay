@@ -44,6 +44,7 @@ static constexpr int PLAYER_INFO_DECODE_MODE_CHANGED = 2013;
 static constexpr int PLAYER_INFO_MEDIACODEC_OPENED = 2014;
 static constexpr int PLAYER_INFO_MEDIACODEC_FALLBACK = 2015;
 static constexpr int PLAYER_INFO_MEDIACODEC_UNSUPPORTED = 2016;
+static constexpr int PLAYER_INFO_MEDIACODEC_FORMAT_CHANGED = 2020;
 
 /** 判断字符串是否以指定前缀开头，比较时忽略大小写。 */
 static bool startsWithIgnoreCase(const std::string &value, const char *prefix) {
@@ -127,6 +128,10 @@ NativePlayer::NativePlayer(JavaVM *vm, JNIEnv *env, jobject javaPlayer)
           currentDecodeType("software"),
           currentDecoderName("ffmpeg"),
           lastDecodeFallbackReason(),
+          mediaCodecAvcEnabled(true),
+          mediaCodecHevcEnabled(true),
+          mediaCodecAutoRotateEnabled(true),
+          mediaCodecHandleResolutionChangeEnabled(true),
           javaVm(vm),
           javaPlayerObject(nullptr),
           onNativeAudioInfoMethod(nullptr),
@@ -134,6 +139,7 @@ NativePlayer::NativePlayer(JavaVM *vm, JNIEnv *env, jobject javaPlayer)
           onNativeInfoMethod(nullptr),
           onNativeErrorMethod(nullptr),
           onNativeVideoSizeChangedMethod(nullptr),
+          onNativeMediaCodecSelectMethod(nullptr),
           recordFormatContext(nullptr),
           recording(false),
           recordingOutputPath(),
@@ -172,6 +178,12 @@ NativePlayer::NativePlayer(JavaVM *vm, JNIEnv *env, jobject javaPlayer)
                     clazz,
                     "onNativeVideoSizeChanged",
                     "(II)V"
+            );
+
+            onNativeMediaCodecSelectMethod = env->GetMethodID(
+                    clazz,
+                    "onNativeMediaCodecSelect",
+                    "(Ljava/lang/String;Ljava/lang/String;)Z"
             );
 
             env->DeleteLocalRef(clazz);
@@ -286,6 +298,30 @@ bool NativePlayer::setLongOption(int category, const std::string &name, int64_t 
     if (name == "max_delay") {
         maxDelayUs = value;
         return true;
+    }
+
+    if (name == "mediacodec-avc") {
+        mediaCodecAvcEnabled = value != 0;
+        return true;
+    }
+
+    if (name == "mediacodec-hevc") {
+        mediaCodecHevcEnabled = value != 0;
+        return true;
+    }
+
+    if (name == "mediacodec-auto-rotate") {
+        mediaCodecAutoRotateEnabled = value != 0;
+        return true;
+    }
+
+    if (name == "mediacodec-handle-resolution-change") {
+        mediaCodecHandleResolutionChangeEnabled = value != 0;
+        return true;
+    }
+
+    if (name == "mediacodec-mpeg4" || name == "mediacodec-mpeg2") {
+        return value == 0;
     }
 
     return false;
@@ -1313,10 +1349,11 @@ bool NativePlayer::tryMediaCodecDecodeLoop(
         return false;
     }
 
-    if (!MediaCodecVideoDecoder::isSupportedCodecId(codecParameters->codec_id)) {
+    std::string allowReason;
+    if (!isMediaCodecAllowed(codecParameters->codec_id, allowReason)) {
         notifyInfo(
                 PLAYER_INFO_MEDIACODEC_UNSUPPORTED,
-                std::string("unsupported codec: ") + avcodec_get_name(codecParameters->codec_id)
+                allowReason
         );
         return false;
     }
@@ -1340,6 +1377,21 @@ bool NativePlayer::tryMediaCodecDecodeLoop(
     }
 
     std::string mediaCodecName = decoder.getCodecName();
+    const char *mime = MediaCodecVideoDecoder::mimeFromCodecId(codecParameters->codec_id);
+    if (!askJavaMediaCodecSelect(mime == nullptr ? "" : mime, mediaCodecName)) {
+        notifyInfo(
+                PLAYER_INFO_MEDIACODEC_UNSUPPORTED,
+                "mediacodec rejected by Java selector\ncodec: " + mediaCodecName
+        );
+        updateDecodeInfo(
+                "software",
+                std::string("ffmpeg-") + avcodec_get_name(codecParameters->codec_id),
+                "rejected by Java selector"
+        );
+        decoder.release();
+        return false;
+    }
+
     updateDecodeInfo("mediacodec", mediaCodecName, "");
     notifyInfo(PLAYER_INFO_MEDIACODEC_OPENED, "mediacodec opened\ncodec: " + mediaCodecName);
 
@@ -1414,8 +1466,15 @@ bool NativePlayer::tryMediaCodecDecodeLoop(
             decodedFrameCount++;
             recordDecodedVideoFrame();
             std::this_thread::sleep_for(std::chrono::microseconds(frameDurationUs));
-        } else if (status == MediaCodecVideoDecoder::Status::OUTPUT_FORMAT_CHANGED
-                   || status == MediaCodecVideoDecoder::Status::OUTPUT_TRY_AGAIN) {
+        } else if (status == MediaCodecVideoDecoder::Status::OUTPUT_FORMAT_CHANGED) {
+            notifyInfo(
+                    PLAYER_INFO_MEDIACODEC_FORMAT_CHANGED,
+                    mediaCodecHandleResolutionChangeEnabled
+                    ? "mediacodec output format changed"
+                    : "mediacodec output format changed, app handling disabled"
+            );
+            outputTryAgainCount = 0;
+        } else if (status == MediaCodecVideoDecoder::Status::OUTPUT_TRY_AGAIN) {
             outputTryAgainCount++;
             if (outputTryAgainCount > 300 && !demuxFinished.load()) {
                 hardDecodeFailed = true;
@@ -2647,6 +2706,66 @@ void NativePlayer::updateDecodeInfo(
     notifyInfo(PLAYER_INFO_DECODE_MODE_CHANGED, message.str());
 }
 
+/** 判断指定编码是否允许进入 MediaCodec。 */
+bool NativePlayer::isMediaCodecAllowed(int codecId, std::string &reason) {
+    if (!MediaCodecVideoDecoder::isSupportedCodecId(codecId)) {
+        reason = std::string("unsupported codec: ")
+                 + avcodec_get_name(static_cast<AVCodecID>(codecId));
+        return false;
+    }
+
+    if (codecId == AV_CODEC_ID_H264 && !mediaCodecAvcEnabled) {
+        reason = "mediacodec-avc disabled";
+        return false;
+    }
+
+    if (codecId == AV_CODEC_ID_HEVC && !mediaCodecHevcEnabled) {
+        reason = "mediacodec-hevc disabled";
+        return false;
+    }
+
+    reason.clear();
+    return true;
+}
+
+/** 询问 Java 层是否允许当前 MediaCodec。 */
+bool NativePlayer::askJavaMediaCodecSelect(
+        const std::string &mimeType,
+        const std::string &codecName) {
+    bool needDetach = false;
+    JNIEnv *env = getJNIEnv(&needDetach);
+    if (env == nullptr
+            || javaPlayerObject == nullptr
+            || onNativeMediaCodecSelectMethod == nullptr) {
+        releaseJNIEnv(needDetach);
+        return true;
+    }
+
+    jstring mimeString = env->NewStringUTF(mimeType.c_str());
+    jstring codecString = env->NewStringUTF(codecName.c_str());
+    if (mimeString == nullptr || codecString == nullptr) {
+        if (mimeString != nullptr) {
+            env->DeleteLocalRef(mimeString);
+        }
+        if (codecString != nullptr) {
+            env->DeleteLocalRef(codecString);
+        }
+        releaseJNIEnv(needDetach);
+        return true;
+    }
+
+    jboolean allowed = env->CallBooleanMethod(
+            javaPlayerObject,
+            onNativeMediaCodecSelectMethod,
+            mimeString,
+            codecString
+    );
+    env->DeleteLocalRef(mimeString);
+    env->DeleteLocalRef(codecString);
+    releaseJNIEnv(needDetach);
+    return allowed == JNI_TRUE;
+}
+
 /** 回调 Java 播放器错误事件。 */
 void NativePlayer::notifyError(int errorCode, const std::string &message) {
     bool needDetach = false;
@@ -2740,6 +2859,7 @@ void NativePlayer::releaseJavaCallback() {
     onNativeInfoMethod = nullptr;
     onNativeErrorMethod = nullptr;
     onNativeVideoSizeChangedMethod = nullptr;
+    onNativeMediaCodecSelectMethod = nullptr;
 
     releaseJNIEnv(needDetach);
 }
@@ -2760,11 +2880,10 @@ std::string NativePlayer::probeMediaCodecDecoder(const AVCodecParameters *codecP
         return "skip: invalid video codec parameters";
     }
 
-    if (!MediaCodecVideoDecoder::isSupportedCodecId(codecParameters->codec_id)) {
-        std::string reason = std::string("unsupported codec: ")
-                             + avcodec_get_name(codecParameters->codec_id);
-        notifyInfo(PLAYER_INFO_MEDIACODEC_UNSUPPORTED, reason);
-        return reason;
+    std::string allowReason;
+    if (!isMediaCodecAllowed(codecParameters->codec_id, allowReason)) {
+        notifyInfo(PLAYER_INFO_MEDIACODEC_UNSUPPORTED, allowReason);
+        return allowReason;
     }
 
     MediaCodecVideoDecoder decoder;

@@ -305,6 +305,14 @@ private:
     std::string currentDecoderName;
     /** 最近一次硬解失败回退原因。 */
     std::string lastDecodeFallbackReason;
+    /** 是否允许 H.264 走 MediaCodec。 */
+    bool mediaCodecAvcEnabled;
+    /** 是否允许 H.265 走 MediaCodec。 */
+    bool mediaCodecHevcEnabled;
+    /** 是否允许 MediaCodec 自动旋转。 */
+    bool mediaCodecAutoRotateEnabled;
+    /** 是否允许 MediaCodec 处理分辨率变化。 */
+    bool mediaCodecHandleResolutionChangeEnabled;
 
     /** JavaVM 指针，用于子线程回调 Java。 */
     JavaVM *javaVm;
@@ -320,6 +328,8 @@ private:
     jmethodID onNativeErrorMethod;
     /** Native 视频尺寸变化回调方法。 */
     jmethodID onNativeVideoSizeChangedMethod;
+    /** Native MediaCodec 选择回调方法。 */
+    jmethodID onNativeMediaCodecSelectMethod;
 
     /** 录制输出上下文。 */
     AVFormatContext *recordFormatContext;
@@ -454,6 +464,12 @@ private:
             const std::string &decoderName,
             const std::string &fallbackReason
     );
+
+    /** 判断指定编码是否允许进入 MediaCodec。 */
+    bool isMediaCodecAllowed(int codecId, std::string &reason);
+
+    /** 询问 Java 层是否允许当前 MediaCodec。 */
+    bool askJavaMediaCodecSelect(const std::string &mimeType, const std::string &codecName);
 
     /** 回调 Java 播放器错误事件。 */
     void notifyError(int errorCode, const std::string &message);

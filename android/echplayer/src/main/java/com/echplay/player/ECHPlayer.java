@@ -379,6 +379,8 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     public static final int INFO_RECONNECTED = 2018;
     /** 自动重连失败。 */
     public static final int INFO_RECONNECT_FAILED = 2019;
+    /** MediaCodec 输出格式发生变化。 */
+    public static final int INFO_MEDIACODEC_FORMAT_CHANGED = 2020;
 
     /** prepare 完成监听器。 */
     public interface OnPreparedListener {
@@ -426,6 +428,12 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     public interface OnTimedTextListener {
         /** 收到字幕文本时回调。 */
         void onTimedText(ECHPlayer player, ECHTimedText text);
+    }
+
+    /** MediaCodec 选择监听器，用于允许业务屏蔽具体硬解路径。 */
+    public interface OnMediaCodecSelectListener {
+        /** 返回 true 表示允许该 codec 走 MediaCodec，false 表示强制回退软解。 */
+        boolean onMediaCodecSelect(ECHPlayer player, String mimeType, String codecName);
     }
 
     /** RTSP 走 TCP 传输。 */
@@ -520,6 +528,19 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     public static final String OPTION_DECODE_MODE = "decode_mode";
     /** ijkplayer 风格 MediaCodec 开关 option 名称。 */
     public static final String OPTION_MEDIACODEC = "mediacodec";
+    /** MediaCodec 自动旋转 option 名称。 */
+    public static final String OPTION_MEDIACODEC_AUTO_ROTATE = "mediacodec-auto-rotate";
+    /** MediaCodec 分辨率变化处理 option 名称。 */
+    public static final String OPTION_MEDIACODEC_HANDLE_RESOLUTION_CHANGE =
+            "mediacodec-handle-resolution-change";
+    /** H.264 MediaCodec 开关 option 名称。 */
+    public static final String OPTION_MEDIACODEC_AVC = "mediacodec-avc";
+    /** H.265 MediaCodec 开关 option 名称。 */
+    public static final String OPTION_MEDIACODEC_HEVC = "mediacodec-hevc";
+    /** MPEG4 MediaCodec 预留开关 option 名称。 */
+    public static final String OPTION_MEDIACODEC_MPEG4 = "mediacodec-mpeg4";
+    /** MPEG2 MediaCodec 预留开关 option 名称。 */
+    public static final String OPTION_MEDIACODEC_MPEG2 = "mediacodec-mpeg2";
     /** RTSP TCP option 值。 */
     public static final String OPTION_VALUE_TCP = "tcp";
     /** RTSP UDP option 值。 */
@@ -607,6 +628,8 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     private OnSeekCompleteListener onSeekCompleteListener;
     /** 字幕文本监听器。 */
     private OnTimedTextListener onTimedTextListener;
+    /** MediaCodec 选择监听器。 */
+    private OnMediaCodecSelectListener onMediaCodecSelectListener;
     /** 当前显示目标 SurfaceHolder。 */
     private SurfaceHolder displayHolder;
     /** 当前视频宽度。 */
@@ -665,6 +688,14 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     private long latestSeekLoadDurationMs = -1L;
     /** 是否开启精确 seek。 */
     private boolean accurateSeekEnabled = false;
+    /** 是否允许 H.264 走 MediaCodec。 */
+    private boolean mediaCodecAvcEnabled = true;
+    /** 是否允许 H.265 走 MediaCodec。 */
+    private boolean mediaCodecHevcEnabled = true;
+    /** 是否允许 MediaCodec 自动旋转。 */
+    private boolean mediaCodecAutoRotateEnabled = true;
+    /** 是否允许 MediaCodec 处理分辨率变化。 */
+    private boolean mediaCodecHandleResolutionChangeEnabled = true;
     /** 缓冲开始水位，单位百分比。 */
     private int bufferingStartPercent = 5;
     /** 缓冲结束水位，单位百分比。 */
@@ -718,6 +749,11 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     /** 设置字幕文本监听器。 */
     public synchronized void setOnTimedTextListener(OnTimedTextListener listener) {
         onTimedTextListener = listener;
+    }
+
+    /** 设置 MediaCodec 选择监听器。 */
+    public synchronized void setOnMediaCodecSelectListener(OnMediaCodecSelectListener listener) {
+        onMediaCodecSelectListener = listener;
     }
 
     /** 设置播放数据源。 */
@@ -855,6 +891,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         checkReleased();
         this.decodeMode = normalizeDecodeMode(decodeMode);
         nativeSetDecodeMode(nativeHandle, this.decodeMode);
+        applyMediaCodecOptions();
     }
 
     /** 返回当前期望解码模式。 */
@@ -1087,6 +1124,26 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
             rememberLongOption(category, name, value);
             return true;
         }
+        if (OPTION_MEDIACODEC_AUTO_ROTATE.equals(name)) {
+            mediaCodecAutoRotateEnabled = value != 0;
+            return rememberNativeLongOption(category, name, mediaCodecAutoRotateEnabled ? 1L : 0L);
+        }
+        if (OPTION_MEDIACODEC_HANDLE_RESOLUTION_CHANGE.equals(name)) {
+            mediaCodecHandleResolutionChangeEnabled = value != 0;
+            return rememberNativeLongOption(category, name,
+                    mediaCodecHandleResolutionChangeEnabled ? 1L : 0L);
+        }
+        if (OPTION_MEDIACODEC_AVC.equals(name)) {
+            mediaCodecAvcEnabled = value != 0;
+            return rememberNativeLongOption(category, name, mediaCodecAvcEnabled ? 1L : 0L);
+        }
+        if (OPTION_MEDIACODEC_HEVC.equals(name)) {
+            mediaCodecHevcEnabled = value != 0;
+            return rememberNativeLongOption(category, name, mediaCodecHevcEnabled ? 1L : 0L);
+        }
+        if (OPTION_MEDIACODEC_MPEG4.equals(name) || OPTION_MEDIACODEC_MPEG2.equals(name)) {
+            return rememberNativeLongOption(category, name, 0L);
+        }
         if (OPTION_RECONNECT.equals(name)) {
             setReconnectEnabled(value != 0);
             rememberLongOption(category, name, value);
@@ -1169,6 +1226,14 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
             rememberStringOption(category, name, value);
             return true;
         }
+        if (OPTION_MEDIACODEC_AUTO_ROTATE.equals(name)
+                || OPTION_MEDIACODEC_HANDLE_RESOLUTION_CHANGE.equals(name)
+                || OPTION_MEDIACODEC_AVC.equals(name)
+                || OPTION_MEDIACODEC_HEVC.equals(name)
+                || OPTION_MEDIACODEC_MPEG4.equals(name)
+                || OPTION_MEDIACODEC_MPEG2.equals(name)) {
+            return setOption(category, name, parseBooleanOption(value) ? 1L : 0L);
+        }
         if (OPTION_RECONNECT.equals(name)) {
             boolean enable = "1".equals(value) || "true".equalsIgnoreCase(value);
             setReconnectEnabled(enable);
@@ -1225,6 +1290,12 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
                 || OPTION_RENDER_MODE.equals(name)
                 || OPTION_DECODE_MODE.equals(name)
                 || OPTION_MEDIACODEC.equals(name)
+                || OPTION_MEDIACODEC_AUTO_ROTATE.equals(name)
+                || OPTION_MEDIACODEC_HANDLE_RESOLUTION_CHANGE.equals(name)
+                || OPTION_MEDIACODEC_AVC.equals(name)
+                || OPTION_MEDIACODEC_HEVC.equals(name)
+                || OPTION_MEDIACODEC_MPEG4.equals(name)
+                || OPTION_MEDIACODEC_MPEG2.equals(name)
                 || OPTION_RECONNECT.equals(name)
                 || OPTION_RECONNECT_MAX_COUNT.equals(name)
                 || OPTION_RECONNECT_INTERVAL_MS.equals(name)
@@ -1423,6 +1494,10 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         currentDecodeType = "software";
         currentDecoderName = "ffmpeg";
         lastDecodeFallbackReason = "";
+        mediaCodecAvcEnabled = true;
+        mediaCodecHevcEnabled = true;
+        mediaCodecAutoRotateEnabled = true;
+        mediaCodecHandleResolutionChangeEnabled = true;
         recordingState = RecordingState.IDLE;
         lastRecordingPath = "";
         currentDataSource = "";
@@ -1435,6 +1510,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         looping = false;
         latestSeekLoadDurationMs = -1L;
         accurateSeekEnabled = false;
+        applyMediaCodecOptions();
         bufferingStartPercent = 5;
         bufferingEndPercent = 95;
         lastBufferingPercent = 100;
@@ -1801,8 +1877,23 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
             dispatchBufferingUpdate(bufferingStartPercent);
         } else if (infoCode == INFO_BUFFERING_END) {
             dispatchBufferingUpdate(bufferingEndPercent);
+        } else if (infoCode == INFO_MEDIACODEC_FORMAT_CHANGED) {
+            updateVideoSizeFromNative();
         }
         dispatchInfo(infoCode, message);
+    }
+
+    /** Native 回调：询问 Java 层是否允许指定 MediaCodec。 */
+    @SuppressWarnings("unused")
+    private synchronized boolean onNativeMediaCodecSelect(String mimeType, String codecName) {
+        if (onMediaCodecSelectListener == null) {
+            return true;
+        }
+        return onMediaCodecSelectListener.onMediaCodecSelect(
+                this,
+                mimeType == null ? "" : mimeType,
+                codecName == null ? "" : codecName
+        );
     }
 
     /** Native 回调：播放器错误事件。 */
@@ -2218,12 +2309,47 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         return DECODE_MODE_AUTO;
     }
 
+    /** 解析常见布尔 option 文本。 */
+    private boolean parseBooleanOption(String value) {
+        return "1".equals(value)
+                || "true".equalsIgnoreCase(value)
+                || "yes".equalsIgnoreCase(value)
+                || "on".equalsIgnoreCase(value)
+                || "enable".equalsIgnoreCase(value)
+                || "enabled".equalsIgnoreCase(value);
+    }
+
+    /** 把 Java 层 MediaCodec 配置同步给 native。 */
+    private void applyMediaCodecOptions() {
+        if (nativeHandle == 0) {
+            return;
+        }
+        nativeSetLongOption(nativeHandle, OPTION_CATEGORY_PLAYER,
+                OPTION_MEDIACODEC_AVC, mediaCodecAvcEnabled ? 1L : 0L);
+        nativeSetLongOption(nativeHandle, OPTION_CATEGORY_PLAYER,
+                OPTION_MEDIACODEC_HEVC, mediaCodecHevcEnabled ? 1L : 0L);
+        nativeSetLongOption(nativeHandle, OPTION_CATEGORY_PLAYER,
+                OPTION_MEDIACODEC_AUTO_ROTATE, mediaCodecAutoRotateEnabled ? 1L : 0L);
+        nativeSetLongOption(nativeHandle, OPTION_CATEGORY_PLAYER,
+                OPTION_MEDIACODEC_HANDLE_RESOLUTION_CHANGE,
+                mediaCodecHandleResolutionChangeEnabled ? 1L : 0L);
+    }
+
     /** 记录 long option 快照。 */
     private void rememberLongOption(int category, String name, long value) {
         if (name == null || name.length() == 0) {
             return;
         }
         longOptions.put(buildOptionKey(category, name), value);
+    }
+
+    /** 记录已经成功下发到 native 的 long option。 */
+    private boolean rememberNativeLongOption(int category, String name, long value) {
+        boolean handled = nativeSetLongOption(nativeHandle, category, name, value);
+        if (handled) {
+            rememberLongOption(category, name, value);
+        }
+        return handled;
     }
 
     /** 记录 String option 快照。 */
