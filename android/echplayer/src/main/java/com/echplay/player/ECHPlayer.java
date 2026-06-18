@@ -498,7 +498,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     public static final int PROP_INT64_ASYNC_STATISTIC_BUF_CAPACITY = 20203;
     /** 累计网络读取字节数属性。 */
     public static final int PROP_INT64_TRAFFIC_STATISTIC_BYTE_COUNT = 20204;
-    /** 最近一次 seek 耗时属性，v2.0 暂返回默认值。 */
+    /** 最近一次 seek 耗时属性，单位毫秒。 */
     public static final int PROP_INT64_LATEST_SEEK_LOAD_DURATION = 20300;
     /** 解码器未知。 */
     public static final int PROP_DECODER_UNKNOWN = 0;
@@ -552,6 +552,12 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     public static final String OPTION_RECONNECT_MAX_COUNT = "reconnect_max_count";
     /** 重连间隔 option 名称，单位毫秒。 */
     public static final String OPTION_RECONNECT_INTERVAL_MS = "reconnect_interval_ms";
+    /** 精确 seek 开关 option 名称，1 开启，0 关闭。 */
+    public static final String OPTION_ACCURATE_SEEK = "accurate_seek";
+    /** 缓冲开始水位 option 名称，单位百分比。 */
+    public static final String OPTION_BUFFERING_START_PERCENT = "buffering_start_percent";
+    /** 缓冲结束水位 option 名称，单位百分比。 */
+    public static final String OPTION_BUFFERING_END_PERCENT = "buffering_end_percent";
 
     static {
         System.loadLibrary("echplayer");
@@ -655,6 +661,16 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     private long startCallTimeMs = 0L;
     /** 最近一次首帧耗时，单位毫秒。 */
     private long firstFrameCostMs = -1L;
+    /** 最近一次 seek 耗时，单位毫秒。 */
+    private long latestSeekLoadDurationMs = -1L;
+    /** 是否开启精确 seek。 */
+    private boolean accurateSeekEnabled = false;
+    /** 缓冲开始水位，单位百分比。 */
+    private int bufferingStartPercent = 5;
+    /** 缓冲结束水位，单位百分比。 */
+    private int bufferingEndPercent = 95;
+    /** 最近一次分发给业务层的缓冲百分比。 */
+    private int lastBufferingPercent = 100;
 
     /** Java 音频输出实例。 */
     private AudioTrack audioTrack;
@@ -1017,6 +1033,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
             case PROP_INT64_TRAFFIC_STATISTIC_BYTE_COUNT:
                 return nativeGetReadBytes(nativeHandle);
             case PROP_INT64_LATEST_SEEK_LOAD_DURATION:
+                return latestSeekLoadDurationMs >= 0L ? latestSeekLoadDurationMs : defaultValue;
             case PROP_INT64_ASYNC_STATISTIC_BUF_BACKWARDS:
             case PROP_INT64_ASYNC_STATISTIC_BUF_FORWARDS:
             case PROP_INT64_ASYNC_STATISTIC_BUF_CAPACITY:
@@ -1085,6 +1102,27 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
             rememberLongOption(category, name, value);
             return true;
         }
+        if (OPTION_ACCURATE_SEEK.equals(name)) {
+            accurateSeekEnabled = value != 0;
+            rememberLongOption(category, name, value);
+            return true;
+        }
+        if (OPTION_BUFFERING_START_PERCENT.equals(name)) {
+            bufferingStartPercent = clampPercent((int) value);
+            if (bufferingStartPercent > bufferingEndPercent) {
+                bufferingEndPercent = bufferingStartPercent;
+            }
+            rememberLongOption(category, name, bufferingStartPercent);
+            return true;
+        }
+        if (OPTION_BUFFERING_END_PERCENT.equals(name)) {
+            bufferingEndPercent = clampPercent((int) value);
+            if (bufferingEndPercent < bufferingStartPercent) {
+                bufferingStartPercent = bufferingEndPercent;
+            }
+            rememberLongOption(category, name, bufferingEndPercent);
+            return true;
+        }
 
         boolean handled = nativeSetLongOption(nativeHandle, category, name, value);
         if (handled) {
@@ -1137,6 +1175,12 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
             rememberStringOption(category, name, value);
             return true;
         }
+        if (OPTION_ACCURATE_SEEK.equals(name)) {
+            boolean enable = "1".equals(value) || "true".equalsIgnoreCase(value);
+            accurateSeekEnabled = enable;
+            rememberStringOption(category, name, value);
+            return true;
+        }
         if (OPTION_HEADERS.equals(name)
                 || OPTION_USER_AGENT.equals(name)
                 || OPTION_PROTOCOL_WHITELIST.equals(name)) {
@@ -1184,6 +1228,9 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
                 || OPTION_RECONNECT.equals(name)
                 || OPTION_RECONNECT_MAX_COUNT.equals(name)
                 || OPTION_RECONNECT_INTERVAL_MS.equals(name)
+                || OPTION_ACCURATE_SEEK.equals(name)
+                || OPTION_BUFFERING_START_PERCENT.equals(name)
+                || OPTION_BUFFERING_END_PERCENT.equals(name)
                 || OPTION_TIMEOUT.equals(name)
                 || OPTION_STIMEOUT.equals(name)
                 || OPTION_RW_TIMEOUT.equals(name)
@@ -1386,6 +1433,11 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         leftVolume = 1.0f;
         rightVolume = 1.0f;
         looping = false;
+        latestSeekLoadDurationMs = -1L;
+        accurateSeekEnabled = false;
+        bufferingStartPercent = 5;
+        bufferingEndPercent = 95;
+        lastBufferingPercent = 100;
         reconnectCount = 0;
         reconnecting = false;
         resetPlaybackTiming();
@@ -1412,9 +1464,13 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         State stateBeforeSeek = state;
         boolean wasPlaying = playing;
         boolean wasPaused = paused;
+        int bufferingPercentBeforeSeek = lastBufferingPercent;
+        long seekStartTimeMs = System.currentTimeMillis();
         seeking = true;
         state = State.SEEKING;
+        dispatchBufferingUpdate(bufferingStartPercent);
         String result = nativeSeekToMs(nativeHandle, positionMs);
+        latestSeekLoadDurationMs = Math.max(0L, System.currentTimeMillis() - seekStartTimeMs);
         seeking = false;
 
         if (result != null && result.startsWith("seek success")) {
@@ -1422,9 +1478,16 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
             paused = wasPaused;
             state = wasPlaying ? State.STARTED : (wasPaused ? State.PAUSED : State.PREPARED);
             completionDispatched = false;
-            dispatchInfo(INFO_SEEK_COMPLETE, result);
+            dispatchBufferingUpdate(bufferingEndPercent);
+            dispatchInfo(
+                    INFO_SEEK_COMPLETE,
+                    result
+                            + "\naccurateSeek: " + accurateSeekEnabled
+                            + "\nseekLoadDurationMs: " + latestSeekLoadDurationMs
+            );
             dispatchSeekComplete();
         } else {
+            dispatchBufferingUpdate(bufferingPercentBeforeSeek);
             playing = wasPlaying;
             paused = wasPaused;
             state = stateBeforeSeek;
@@ -1673,6 +1736,8 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
             recordingState = RecordingState.IDLE;
             resetPlaybackTiming();
             resetVideoSize();
+            latestSeekLoadDurationMs = -1L;
+            lastBufferingPercent = 100;
             state = State.RELEASED;
 
             releaseAudioTrack();
@@ -1733,9 +1798,9 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     /** Native 回调：播放器信息事件。 */
     private synchronized void onNativeInfo(int infoCode, String message) {
         if (infoCode == INFO_BUFFERING_START) {
-            dispatchBufferingUpdate(0);
+            dispatchBufferingUpdate(bufferingStartPercent);
         } else if (infoCode == INFO_BUFFERING_END) {
-            dispatchBufferingUpdate(100);
+            dispatchBufferingUpdate(bufferingEndPercent);
         }
         dispatchInfo(infoCode, message);
     }
@@ -1879,9 +1944,15 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
 
     /** 分发缓冲进度回调。 */
     private void dispatchBufferingUpdate(int percent) {
+        lastBufferingPercent = clampPercent(percent);
         if (onBufferingUpdateListener != null) {
-            onBufferingUpdateListener.onBufferingUpdate(this, percent);
+            onBufferingUpdateListener.onBufferingUpdate(this, lastBufferingPercent);
         }
+    }
+
+    /** 把百分比限制到 0 到 100。 */
+    private int clampPercent(int percent) {
+        return Math.max(0, Math.min(100, percent));
     }
 
     /** 取消当前正在等待或执行的重连任务。 */
