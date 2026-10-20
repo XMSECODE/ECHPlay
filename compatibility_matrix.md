@@ -1,6 +1,8 @@
 # ECHPlay 兼容性矩阵
 
-更新时间：2026-06-18
+更新时间：2026-10-20
+
+原始版本目标尚未全部完成，见 `v2.1-v2.9_completion_audit.md`。表中历史通过记录不代表本轮重新完成设备验收。
 
 状态说明：
 
@@ -65,8 +67,8 @@
 | 媒体信息 / 轨道信息 | 已通过 | v1.6 新增 API 和 Demo 展示 |
 | PlayerView 进度条 / 时间 / seek | 已通过 | v1.7 新增 |
 | PlayerView 控制条自动隐藏 | 已通过 | v1.7 新增 |
-| content Uri 数据源 | 待验证 | v2.1 新增，通过 ContentResolver 打开 fd 并交给 FFmpeg |
-| FileDescriptor 数据源 | 待验证 | v2.1 新增，支持 /proc/self/fd 路径，调用方需保持 fd 打开 |
+| content Uri 数据源 | 待设备回归 | 已修复 Demo 的 Context/Uri 路由和读取权限保存，新增测试 |
+| FileDescriptor 数据源 | 待设备回归 | 使用公开 API 复制 fd；调用方可关闭原对象，播放器只释放副本 |
 | 自定义数据源 | 待验证 | v2.1 新增 ECHMediaDataSource，当前采用临时文件桥接 |
 
 ============================================================

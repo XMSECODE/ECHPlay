@@ -18,8 +18,6 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -740,7 +738,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     private String lastRecordingPath = "";
     /** 最近一次设置的数据源。 */
     private String currentDataSource = "";
-    /** 当前 content Uri 打开的文件描述符，需要保持到 reset/release。 */
+    /** 播放器独立持有的文件描述符，切换数据源或 reset/release 时关闭。 */
     private ParcelFileDescriptor currentParcelFileDescriptor;
     /** 最近一次设置数据源时附带的 headers。 */
     private final Map<String, String> currentDataSourceHeaders = new HashMap<>();
@@ -946,21 +944,26 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         setDataSource(resolvedSource, headers);
     }
 
-    /** 设置文件描述符播放数据源，调用方需要保证 fd 在播放期间保持打开。 */
+    /** 复制文件描述符作为播放数据源；调用成功后，调用方可以关闭原始 fd。 */
     public synchronized void setDataSource(FileDescriptor fd) {
-        if (fd == null) {
-            throw new IllegalArgumentException("fd is null");
+        checkDataSourceState();
+        if (fd == null || !fd.valid()) {
+            throw new IllegalArgumentException("file descriptor is invalid");
         }
-        setResolvedDataSource(resolveFileDescriptorDataSource(fd), null, null);
+        try {
+            setOwnedFileDescriptorDataSource(ParcelFileDescriptor.dup(fd), null);
+        } catch (IOException e) {
+            throw new IllegalArgumentException("cannot duplicate file descriptor", e);
+        }
     }
 
-    /** 设置 ParcelFileDescriptor 播放数据源，播放器会在 reset/release 时关闭它。 */
+    /** 复制 ParcelFileDescriptor 用于播放；调用方仍负责关闭传入对象。 */
     public synchronized void setDataSource(ParcelFileDescriptor parcelFileDescriptor) {
+        checkDataSourceState();
         if (parcelFileDescriptor == null) {
             throw new IllegalArgumentException("parcelFileDescriptor is null");
         }
-        setResolvedDataSource(resolveParcelFileDescriptorDataSource(parcelFileDescriptor), null,
-                parcelFileDescriptor);
+        setDataSource(parcelFileDescriptor.getFileDescriptor());
     }
 
     /** 设置自定义数据源，并把数据顺序写入临时文件后交给 FFmpeg 播放。 */
@@ -2853,27 +2856,46 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
 
     /** 打开 content Uri 并转成 FFmpeg 可访问的 fd 路径。 */
     private void setContentUriDataSource(Context context, Uri uri, Map<String, String> headers) {
+        checkDataSourceState();
         if (context == null) {
             throw new IllegalArgumentException("context is null for content uri");
         }
 
-        ParcelFileDescriptor parcelFileDescriptor = null;
         try {
-            parcelFileDescriptor = context.getContentResolver().openFileDescriptor(uri, "r");
+            ParcelFileDescriptor parcelFileDescriptor =
+                    context.getContentResolver().openFileDescriptor(uri, "r");
             if (parcelFileDescriptor == null) {
                 throw new IllegalArgumentException("cannot open content uri: " + uri);
             }
-            setResolvedDataSource(resolveParcelFileDescriptorDataSource(parcelFileDescriptor),
-                    headers, parcelFileDescriptor);
-            parcelFileDescriptor = null;
+            setOwnedFileDescriptorDataSource(parcelFileDescriptor, headers);
         } catch (IOException e) {
             throw new IllegalArgumentException("cannot open content uri: " + uri, e);
+        }
+    }
+
+    /** 在打开文件或复制 fd 前校验状态，拒绝请求时不创建额外资源。 */
+    private void checkDataSourceState() {
+        checkReleased();
+        requireState(State.IDLE, State.STOPPED, State.ERROR);
+    }
+
+    /** 接管本次打开的 fd；设置失败时关闭它，设置成功后由播放器统一释放。 */
+    private void setOwnedFileDescriptorDataSource(
+            ParcelFileDescriptor ownedDescriptor, Map<String, String> headers) {
+        boolean installed = false;
+        try {
+            setResolvedDataSource(resolveParcelFileDescriptorDataSource(ownedDescriptor),
+                    headers, ownedDescriptor);
+            installed = true;
         } finally {
-            if (parcelFileDescriptor != null) {
+            if (!installed) {
+                if (currentParcelFileDescriptor == ownedDescriptor) {
+                    currentParcelFileDescriptor = null;
+                }
                 try {
-                    parcelFileDescriptor.close();
+                    ownedDescriptor.close();
                 } catch (IOException ignored) {
-                    // 打开失败时尽量释放临时 fd，避免泄漏。
+                    // 保留设置数据源时的原始异常。
                 }
             }
         }
@@ -2886,37 +2908,6 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
             throw new IllegalArgumentException("parcel file descriptor is invalid");
         }
         return "/proc/self/fd/" + rawFd;
-    }
-
-    /** 把普通 FileDescriptor 转为 /proc/self/fd 路径。 */
-    private String resolveFileDescriptorDataSource(FileDescriptor fd) {
-        int rawFd = readRawFileDescriptor(fd);
-        if (rawFd < 0) {
-            throw new IllegalArgumentException("file descriptor is invalid");
-        }
-        return "/proc/self/fd/" + rawFd;
-    }
-
-    /** 通过 Android/Java 常见字段读取原始 fd 编号。 */
-    private int readRawFileDescriptor(FileDescriptor fd) {
-        try {
-            Method getIntMethod = FileDescriptor.class.getDeclaredMethod("getInt$");
-            getIntMethod.setAccessible(true);
-            Object value = getIntMethod.invoke(fd);
-            if (value instanceof Integer) {
-                return (Integer) value;
-            }
-        } catch (Exception ignored) {
-            // 不同 Android/Java 版本可能没有 getInt$，继续尝试 descriptor 字段。
-        }
-
-        try {
-            Field descriptorField = FileDescriptor.class.getDeclaredField("descriptor");
-            descriptorField.setAccessible(true);
-            return descriptorField.getInt(fd);
-        } catch (Exception e) {
-            throw new UnsupportedOperationException("cannot read raw file descriptor", e);
-        }
     }
 
     /** 将自定义数据源复制到文件，作为当前阶段的简单可维护实现。 */
@@ -2950,7 +2941,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         }
     }
 
-    /** 关闭当前播放器持有的 content Uri fd。 */
+    /** 关闭播放器自己打开或复制的 fd，保留调用方的原始 fd。 */
     private void closeCurrentParcelFileDescriptor() {
         if (currentParcelFileDescriptor == null) {
             return;

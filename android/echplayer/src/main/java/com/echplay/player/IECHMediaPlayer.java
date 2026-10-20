@@ -33,7 +33,7 @@ public interface IECHMediaPlayer {
     /** 设置带 headers 的 Uri 数据源。 */
     void setDataSource(Context context, Uri uri, Map<String, String> headers);
 
-    /** 设置文件描述符数据源。 */
+    /** 复制文件描述符作为数据源；成功后调用方可以关闭原始 fd。 */
     void setDataSource(FileDescriptor fd);
 
     /** 设置自定义数据源，并把数据落到临时文件后播放。 */

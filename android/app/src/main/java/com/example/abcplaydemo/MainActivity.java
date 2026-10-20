@@ -572,7 +572,7 @@ public class MainActivity extends AppCompatActivity {
             player.setSurface(surface);
             player.setRenderMode(resolveRenderMode());
             player.setDecodeMode(resolveDecodeMode());
-            player.setDataSource(dataSource);
+            setPlayerDataSource(dataSource);
 
             if (playMode == MODE_NETWORK) {
                 applyNetworkOptions(player, dataSource);
@@ -609,7 +609,7 @@ public class MainActivity extends AppCompatActivity {
             startProgressUpdates();
             updateRecordButtonState();
 
-        } catch (IOException e) {
+        } catch (IOException | IllegalArgumentException | SecurityException e) {
             StringBuilder errorText = new StringBuilder();
             errorText.append("没有找到可播放的数据源。\n\n");
             if (playMode == MODE_LOCAL) {
@@ -620,6 +620,17 @@ public class MainActivity extends AppCompatActivity {
             errorText.append("error: ");
             errorText.append(e.getMessage());
             appendLog(errorText.toString());
+        }
+    }
+
+    /** content/file Uri 交给 Android 数据源入口，普通路径和网络地址保持原样。 */
+    private void setPlayerDataSource(String dataSource) {
+        Uri uri = Uri.parse(dataSource);
+        String scheme = uri.getScheme();
+        if ("content".equalsIgnoreCase(scheme) || "file".equalsIgnoreCase(scheme)) {
+            player.setDataSource(this, uri);
+        } else {
+            player.setDataSource(dataSource);
         }
     }
 
@@ -938,18 +949,36 @@ public class MainActivity extends AppCompatActivity {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("video/*");
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         startActivityForResult(intent, REQUEST_PICK_FILE);
     }
 
+    /** 保存系统文件选择结果，并在提供方允许时保留跨重启读取权限。 */
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQUEST_PICK_FILE && resultCode == RESULT_OK && data != null) {
             Uri uri = data.getData();
             if (uri != null) {
+                persistFileReadPermission(uri, data.getFlags());
                 localPathInput.setText(uri.toString());
                 persistPlayMode();
             }
+        }
+    }
+
+    /** 仅保存提供方实际授予的读取权限；临时授权仍可用于本次播放。 */
+    private void persistFileReadPermission(Uri uri, int grantedFlags) {
+        int readFlag = grantedFlags & Intent.FLAG_GRANT_READ_URI_PERMISSION;
+        boolean persistable = (grantedFlags & Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION) != 0;
+        if (!"content".equalsIgnoreCase(uri.getScheme()) || readFlag == 0 || !persistable) {
+            return;
+        }
+        try {
+            getContentResolver().takePersistableUriPermission(uri, readFlag);
+        } catch (SecurityException e) {
+            appendLog("当前文件仅有临时读取权限，重启后请重新选择：" + e.getMessage());
         }
     }
 
