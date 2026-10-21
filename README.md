@@ -1,6 +1,6 @@
 # ECHPlay
 
-当前完善进度（2026-10-20）：对照原始路线图，v2.1-v2.9 仍有未完成项，详见 [实际完成度与补齐顺序](v2.1-v2.9_completion_audit.md)。本轮修复 Demo 的 content Uri 播放入口与 fd 持有策略，并补充设备回归测试；编译检查与设备运行验收分别记录。
+当前完善进度（2026-10-21）：对照原始路线图，v2.1-v2.9 仍有未完成项，详见 [实际完成度与补齐顺序](v2.1-v2.9_completion_audit.md)。已修复 content Uri/fd 数据源，并接入网络 I/O 取消和生命周期任务回收，Demo/PlayerView 使用异步准备。实现边界、回调线程变化与验证结果见 [网络取消验证记录](network_cancellation_validation.md)；设备验收仍待执行。
 
 ECHPlay 是一个基于 FFmpeg 和 Android MediaCodec 的 Android 播放器项目。v1.4 已补齐硬解能力：在 v1.3 OpenGL ES、YUV420P 三纹理、渲染模式切换、视频尺寸回调和 `ECHPlayerView` 画面比例控制基础上，新增 H.264 / H.265 MediaCodec 硬解、软硬解切换、失败回退和当前解码方式展示。v1.5 进入网络播放稳定性和可观测性阶段，重点推进 HTTP / HTTPS / HLS / RTSP 验证、RTSP 自动重连、播放统计和 PlayerView 基础状态。v1.6 进一步补齐媒体信息、轨道信息、prepare 耗时、首帧耗时、render fps、渲染帧数和丢帧统计，让 Demo 与业务侧都能更快定位播放问题。
 

@@ -371,6 +371,9 @@ public class ECHPlayerView extends LinearLayout {
             updateViewState(ViewState.IDLE, "请输入播放地址", false);
             return;
         }
+        if (player.getState() == ECHPlayer.State.PREPARING) {
+            return;
+        }
 
         updateViewState(ViewState.LOADING, "正在准备播放...", false);
         applySurfaceScaleTypeToPlayer();
@@ -378,14 +381,8 @@ public class ECHPlayerView extends LinearLayout {
         applyDecodeModeToPlayer();
         player.setSurface(currentSurface);
         if (!player.isPrepared()) {
-            String prepareResult = player.prepare();
-            emitEvent(prepareResult);
-            if (!player.isPrepared()) {
-                updateViewState(ViewState.ERROR, "播放准备失败\n" + prepareResult, true);
-                return;
-            }
-            refreshDurationAndSeekable();
-            updateVideoSizeFromPlayer();
+            player.prepareAsync();
+            return;
         }
         try {
             emitEvent(player.start());
@@ -471,7 +468,8 @@ public class ECHPlayerView extends LinearLayout {
                 currentSurface = holder.getSurface();
                 surfaceReady = currentSurface != null && currentSurface.isValid();
                 released = false;
-                if (player != null && surfaceReady) {
+                if (player != null && surfaceReady
+                        && player.getState() != ECHPlayer.State.PREPARING) {
                     player.setSurface(currentSurface);
                 }
                 emitEvent("PlayerView Surface created");
@@ -541,21 +539,24 @@ public class ECHPlayerView extends LinearLayout {
 
     /** 处理播放器 info 回调并刷新组件状态。 */
     private void handlePlayerInfo(ECHPlayer targetPlayer, int infoCode, String message) {
-        if (released) {
+        if (released || player != targetPlayer || targetPlayer.isReleased()) {
             return;
         }
 
         if (infoCode == ECHPlayer.INFO_PREPARE_STARTED) {
             updateViewState(ViewState.LOADING, "正在准备播放...", false);
         } else if (infoCode == ECHPlayer.INFO_PREPARED) {
-            emitMediaAndTrackInfo(targetPlayer);
-            refreshDurationAndSeekable();
+            if (targetPlayer.isPrepared()) {
+                emitMediaAndTrackInfo(targetPlayer);
+                refreshDurationAndSeekable();
+            }
         } else if (infoCode == ECHPlayer.INFO_BUFFERING_START) {
             updateViewState(ViewState.BUFFERING, "正在缓冲...", false);
         } else if (infoCode == ECHPlayer.INFO_BUFFERING_END
                 || infoCode == ECHPlayer.INFO_PLAY_STARTED
                 || infoCode == ECHPlayer.INFO_VIDEO_RENDERING_START) {
             updateViewState(ViewState.PLAYING, "", false);
+            startProgressUpdates();
         }
 
         emitEvent("PlayerView info " + infoCode
@@ -645,6 +646,14 @@ public class ECHPlayerView extends LinearLayout {
         }
 
         player = new ECHPlayer();
+        player.setOnPreparedListener(targetPlayer -> postToUi(() -> {
+            if (!released && player == targetPlayer
+                    && targetPlayer.getState() == ECHPlayer.State.PREPARED) {
+                refreshDurationAndSeekable();
+                updateVideoSizeFromPlayer();
+                start();
+            }
+        }));
         player.setOnInfoListener((targetPlayer, infoCode, message) -> {
             postToUi(() -> handlePlayerInfo(targetPlayer, infoCode, message));
             return true;
@@ -679,7 +688,8 @@ public class ECHPlayerView extends LinearLayout {
 
     /** 把当前渲染模式应用到播放器。 */
     private void applyRenderModeToPlayer() {
-        if (player == null || player.isReleased()) {
+        if (player == null || player.isReleased()
+                || player.getState() == ECHPlayer.State.PREPARING) {
             return;
         }
 
@@ -692,7 +702,8 @@ public class ECHPlayerView extends LinearLayout {
 
     /** 把当前解码模式应用到播放器。 */
     private void applyDecodeModeToPlayer() {
-        if (player == null || player.isReleased()) {
+        if (player == null || player.isReleased()
+                || player.getState() == ECHPlayer.State.PREPARING) {
             return;
         }
 
@@ -705,7 +716,8 @@ public class ECHPlayerView extends LinearLayout {
 
     /** 把当前比例模式转换为 NativeWindow 渲染缩放方式。 */
     private void applySurfaceScaleTypeToPlayer() {
-        if (player == null || player.isReleased()) {
+        if (player == null || player.isReleased()
+                || player.getState() == ECHPlayer.State.PREPARING) {
             return;
         }
 
@@ -937,7 +949,8 @@ public class ECHPlayerView extends LinearLayout {
 
     /** 刷新进度条和时间文本。 */
     private void updateProgressUi() {
-        if (released || player == null || player.isReleased()) {
+        if (released || player == null || player.isReleased()
+                || player.getState() == ECHPlayer.State.PREPARING) {
             return;
         }
 
@@ -1086,6 +1099,14 @@ public class ECHPlayerView extends LinearLayout {
     /** 更新 PlayerView 状态覆盖层。 */
     private void updateViewState(ViewState state, String message, boolean showRetry) {
         viewState = state;
+        boolean preparing = state == ViewState.LOADING
+                || (player != null && player.getState() == ECHPlayer.State.PREPARING);
+        pauseButton.setEnabled(!preparing);
+        captureButton.setEnabled(!preparing);
+        recordButton.setEnabled(!preparing);
+        if (preparing) {
+            progressSeekBar.setEnabled(false);
+        }
         String safeMessage = message == null ? "" : message;
 
         if (state == ViewState.PLAYING || state == ViewState.RELEASED) {

@@ -350,6 +350,24 @@ bool NativePlayer::setStringOption(int category, const std::string &name, const 
     return false;
 }
 
+/** 准备任务在 Java 锁内登记后清除取消标记，避免覆盖随后到达的停止请求。 */
+void NativePlayer::beginPrepare() {
+    ioInterrupt.reset();
+}
+
+/** 无需等待网络线程或 Java 回调，立即发布取消请求。 */
+void NativePlayer::requestInterrupt() {
+    ioInterrupt.cancel();
+    stopRequested = true;
+    packetQueueCond.notify_all();
+}
+
+/** FFmpeg 在阻塞 I/O 中周期检查此回调。 */
+int NativePlayer::interruptIo(void *opaque) {
+    auto *player = static_cast<NativePlayer *>(opaque);
+    return player->stopRequested.load() || player->ioInterrupt.shouldInterrupt();
+}
+
 /** 打开输入流并读取音视频信息。 */
 std::string NativePlayer::prepare() {
     if (dataSource.empty()) {
@@ -358,6 +376,16 @@ std::string NativePlayer::prepare() {
 
     releaseFormatContext();
     resetPlaybackStats();
+    stopRequested = false;
+    if (ioInterrupt.isCancelled()) {
+        return "prepare cancelled";
+    }
+
+    formatContext = avformat_alloc_context();
+    if (formatContext == nullptr) {
+        return "prepare failed: cannot allocate format context";
+    }
+    formatContext->interrupt_callback = {interruptIo, this};
 
     ECH_LOGI("prepare start: %s", dataSource.c_str());
 
@@ -388,11 +416,21 @@ std::string NativePlayer::prepare() {
         }
     }
 
+    ioInterrupt.begin(networkSource ? openTimeoutUs.load() : 0);
     int ret = avformat_open_input(&formatContext, dataSource.c_str(), nullptr, &options);
+    ioInterrupt.end();
     av_dict_free(&options);
+    if (ioInterrupt.isCancelled()) {
+        releaseFormatContext();
+        return "prepare cancelled";
+    }
+    if (ioInterrupt.hasTimedOut()) {
+        ret = AVERROR(ETIMEDOUT);
+    }
     if (ret < 0) {
         std::string error = makeErrorString(ret);
         ECH_LOGE("avformat_open_input failed: %s", error.c_str());
+        releaseFormatContext();
 
         return "prepare failed\n"
                "step: avformat_open_input\n"
@@ -401,7 +439,16 @@ std::string NativePlayer::prepare() {
                "source: " + dataSource;
     }
 
+    ioInterrupt.begin(networkSource ? readWriteTimeoutUs.load() : 0);
     ret = avformat_find_stream_info(formatContext, nullptr);
+    ioInterrupt.end();
+    if (ioInterrupt.isCancelled()) {
+        releaseFormatContext();
+        return "prepare cancelled";
+    }
+    if (ioInterrupt.hasTimedOut()) {
+        ret = AVERROR(ETIMEDOUT);
+    }
     if (ret < 0) {
         std::string error = makeErrorString(ret);
         ECH_LOGE("avformat_find_stream_info failed: %s", error.c_str());
@@ -676,6 +723,8 @@ std::string NativePlayer::seekToMs(int64_t positionMs) {
         playing = false;
     }
 
+    // 上面的线程停止仅用于 seek；恢复 I/O 后再定位，外部取消标记仍然有效。
+    stopRequested = false;
     int64_t seekTargetUs = positionMs * 1000;
 
     int ret = avformat_seek_file(
@@ -1088,7 +1137,13 @@ void NativePlayer::demuxLoop() {
     }
 
     while (!stopRequested.load()) {
+        ioInterrupt.begin(isNetworkSource(dataSource) ? readWriteTimeoutUs.load() : 0);
         int ret = av_read_frame(formatContext, packet);
+        ioInterrupt.end();
+        // FFmpeg 可能在 I/O 中断后仍返回最后一个缓存包，不能因此丢失超时原因。
+        if (ioInterrupt.hasTimedOut() && !ioInterrupt.isCancelled()) {
+            ret = AVERROR(ETIMEDOUT);
+        }
         if (ret < 0) {
             if (ret != AVERROR_EOF && !stopRequested.load()) {
                 std::string error = makeErrorString(ret);

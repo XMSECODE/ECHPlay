@@ -15,6 +15,7 @@
 
 #include "GlVideoRenderer.h"
 #include "MediaCodecVideoDecoder.h"
+#include "IoInterrupt.h"
 
 struct AVFormatContext;
 struct AVCodecParameters;
@@ -60,6 +61,12 @@ public:
 
     /** 打开数据源并读取流信息。 */
     std::string prepare();
+
+    /** 在启动准备任务前清除上一轮取消标记，调用方保证旧任务已退出。 */
+    void beginPrepare();
+
+    /** 仅设置原子标记，允许与网络准备、读取并发调用。 */
+    void requestInterrupt();
 
     /** 启动播放线程。 */
     std::string play();
@@ -156,6 +163,10 @@ public:
     std::string getFFmpegVersion();
 
 private:
+    /** FFmpeg 的无锁中断入口，覆盖打开、探测和读取。 */
+    static int interruptIo(void *opaque);
+    /** 取消请求与网络操作期限。 */
+    IoInterrupt ioInterrupt;
     /** 当前数据源路径或 URL。 */
     std::string dataSource;
     /** 输入格式上下文。 */
@@ -276,9 +287,9 @@ private:
     /** RTSP 传输方式，0 为 TCP，1 为 UDP。 */
     int rtspTransport;
     /** 打开输入超时时间，单位微秒。 */
-    int64_t openTimeoutUs;
+    std::atomic<int64_t> openTimeoutUs;
     /** 网络读取超时时间，单位微秒。 */
-    int64_t readWriteTimeoutUs;
+    std::atomic<int64_t> readWriteTimeoutUs;
     /** 网络输入缓冲大小，单位字节。 */
     int64_t inputBufferSize;
     /** RTSP 最大延迟，单位微秒。 */

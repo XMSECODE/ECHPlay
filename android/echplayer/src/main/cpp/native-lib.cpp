@@ -215,6 +215,22 @@ Java_com_echplay_player_ECHPlayer_nativeSetStringOption(
     return handled ? JNI_TRUE : JNI_FALSE;
 }
 
+/** 登记新一轮准备，必须先于工作线程启动。 */
+extern "C" JNIEXPORT void JNICALL
+Java_com_echplay_player_ECHPlayer_nativeBeginPrepare(JNIEnv *, jobject, jlong handle) {
+    if (auto *player = getPlayer(handle)) {
+        player->beginPrepare();
+    }
+}
+
+/** 与 Native 阻塞操作并发发送取消请求，不释放对象。 */
+extern "C" JNIEXPORT void JNICALL
+Java_com_echplay_player_ECHPlayer_nativeRequestInterrupt(JNIEnv *, jobject, jlong handle) {
+    if (auto *player = getPlayer(handle)) {
+        player->requestInterrupt();
+    }
+}
+
 extern "C"
 JNIEXPORT jstring JNICALL
 Java_com_echplay_player_ECHPlayer_nativePrepare(

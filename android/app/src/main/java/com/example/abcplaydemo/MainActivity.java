@@ -158,6 +158,8 @@ public class MainActivity extends AppCompatActivity {
     private boolean demoStarted = false;
     /** 是否存在等待 Surface 创建后执行的自动播放请求。 */
     private boolean pendingAutoPlay = false;
+    /** 自动截图/录制必须等到本次异步准备成功后再计时。 */
+    private boolean pendingAutomationActions = false;
     /** 自动回归截图延迟。 */
     private long autoCaptureDelayMs = 0L;
     /** 自动回归录制时长。 */
@@ -381,7 +383,6 @@ public class MainActivity extends AppCompatActivity {
                     pendingAutoPlay = false;
                     appendLog("自动回归：Surface 已准备，开始播放");
                     tryStartPlayback();
-                    scheduleAutomationActions();
                 }
             }
 
@@ -459,6 +460,7 @@ public class MainActivity extends AppCompatActivity {
         autoCaptureDelayMs = Math.max(0L, intent.getLongExtra(EXTRA_AUTO_CAPTURE_DELAY_MS, 0L));
         autoRecordDurationMs = Math.max(0L, intent.getLongExtra(EXTRA_AUTO_RECORD_DURATION_MS, 0L));
         pendingAutoPlay = intent.getBooleanExtra(EXTRA_AUTO_PLAY, false);
+        pendingAutomationActions = pendingAutoPlay;
         if (pendingAutoPlay) {
             persistPlayMode();
             updateSettingsSummaryUi();
@@ -499,8 +501,16 @@ public class MainActivity extends AppCompatActivity {
 
     /** 安排自动回归截图和录制动作。 */
     private void scheduleAutomationActions() {
+        if (!pendingAutomationActions) {
+            return;
+        }
+        pendingAutomationActions = false;
+        ECHPlayer targetPlayer = player;
         if (autoCaptureDelayMs > 0L) {
             uiHandler.postDelayed(() -> {
+                if (player != targetPlayer || !targetPlayer.isPrepared()) {
+                    return;
+                }
                 appendLog("自动回归：执行截图");
                 captureCurrentFrame();
             }, autoCaptureDelayMs);
@@ -508,10 +518,16 @@ public class MainActivity extends AppCompatActivity {
         if (autoRecordDurationMs > 0L) {
             long startDelayMs = Math.max(1_000L, autoCaptureDelayMs);
             uiHandler.postDelayed(() -> {
+                if (player != targetPlayer || !targetPlayer.isPrepared()) {
+                    return;
+                }
                 appendLog("自动回归：开始短录制");
                 if (player != null && !player.isRecording()) {
                     toggleRecording();
                     uiHandler.postDelayed(() -> {
+                        if (player != targetPlayer || targetPlayer.isReleased()) {
+                            return;
+                        }
                         appendLog("自动回归：停止短录制");
                         stopRecordingWithLog();
                         updateRecordButtonState();
@@ -578,35 +594,7 @@ public class MainActivity extends AppCompatActivity {
                 applyNetworkOptions(player, dataSource);
             }
 
-            String prepareInfo = player.prepare();
-            appendLog(prepareInfo);
-            updateDecodeStatusUi();
-            if (player.getState() != ECHPlayer.State.PREPARED) {
-                appendLog("play aborted: prepare failed\nstate: " + player.getState());
-                updateRecordButtonState();
-                return;
-            }
-            appendLog(formatMediaInfo(player.getMediaInfo()));
-            appendLog(formatTrackInfo(player.getTrackInfo()));
-            appendLog(formatMediaMeta(player.getMediaMeta()));
-            appendLog(formatPropertyInfo(player));
-            appendLog(formatOptionSnapshots(player));
-            appendLog(buildSettingsSummaryText());
-
-            durationMs = Math.max(0, player.getDuration());
-            durationTimeText.setText(formatTime(durationMs));
-            updateSeekableUi();
-
-            String playInfo = player.start();
-            appendLog(playInfo
-                    + "\nrenderMode: " + renderModeToText(player.getRenderMode())
-                    + "\ndecodeMode: " + decodeModeToText(player.getDecodeMode())
-                    + "\ncurrentDecode: " + player.getCurrentDecodeType()
-                    + "\ndecoder: " + player.getCurrentDecoderName()
-                    + "\nfallbackReason: " + player.getLastDecodeFallbackReason()
-                    + "\nstate: " + player.getState());
-            updateDecodeStatusUi();
-            startProgressUpdates();
+            player.prepareAsync();
             updateRecordButtonState();
 
         } catch (IOException | IllegalArgumentException | SecurityException e) {
@@ -623,6 +611,39 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    /** 异步准备成功后启动当前播放器；忽略已停止或被替换的实例。 */
+    private void startPreparedDemo(ECHPlayer targetPlayer) {
+        if (player != targetPlayer || targetPlayer.getState() != ECHPlayer.State.PREPARED) {
+            return;
+        }
+        String prepareInfo = player.getLastPrepareResult();
+        appendLog(prepareInfo);
+        updateDecodeStatusUi();
+        appendLog(formatMediaInfo(player.getMediaInfo()));
+        appendLog(formatTrackInfo(player.getTrackInfo()));
+        appendLog(formatMediaMeta(player.getMediaMeta()));
+        appendLog(formatPropertyInfo(player));
+        appendLog(formatOptionSnapshots(player));
+        appendLog(buildSettingsSummaryText());
+
+        durationMs = Math.max(0, player.getDuration());
+        durationTimeText.setText(formatTime(durationMs));
+        updateSeekableUi();
+
+        String playInfo = player.start();
+        appendLog(playInfo
+                + "\nrenderMode: " + renderModeToText(player.getRenderMode())
+                + "\ndecodeMode: " + decodeModeToText(player.getDecodeMode())
+                + "\ncurrentDecode: " + player.getCurrentDecodeType()
+                + "\ndecoder: " + player.getCurrentDecoderName()
+                + "\nfallbackReason: " + player.getLastDecodeFallbackReason()
+                + "\nstate: " + player.getState());
+        updateDecodeStatusUi();
+        startProgressUpdates();
+        updateRecordButtonState();
+        scheduleAutomationActions();
+    }
+
     /** content/file Uri 交给 Android 数据源入口，普通路径和网络地址保持原样。 */
     private void setPlayerDataSource(String dataSource) {
         Uri uri = Uri.parse(dataSource);
@@ -637,7 +658,7 @@ public class MainActivity extends AppCompatActivity {
     /** 绑定播放器回调并把事件展示到 Demo 日志。 */
     private void bindPlayerCallbacks(ECHPlayer targetPlayer) {
         targetPlayer.setOnPreparedListener(callbackPlayer ->
-                postToUi(() -> appendLog("回调 OnPrepared\nstate: " + callbackPlayer.getState())));
+                postToUi(() -> startPreparedDemo(callbackPlayer)));
 
         targetPlayer.setOnCompletionListener(callbackPlayer ->
                 postToUi(() -> {
@@ -647,16 +668,29 @@ public class MainActivity extends AppCompatActivity {
                 }));
 
         targetPlayer.setOnErrorListener((callbackPlayer, errorCode, message) -> {
-            postToUi(() -> appendLog(
+            postToUi(() -> {
+                if (player != callbackPlayer || callbackPlayer.isReleased()) {
+                    return;
+                }
+                updateRecordButtonState();
+                appendLog(
                     "错误码 " + errorCode + ": " + describeErrorCode(errorCode)
                             + "\nmessage: " + message
                             + "\nstate: " + callbackPlayer.getState()
-            ));
+                );
+            });
             return true;
         });
 
         targetPlayer.setOnInfoListener((callbackPlayer, infoCode, message) -> {
             postToUi(() -> {
+                if (player != callbackPlayer || callbackPlayer.isReleased()) {
+                    return;
+                }
+                if (infoCode == ECHPlayer.INFO_RECONNECTED) {
+                    startProgressUpdates();
+                    scheduleAutomationActions();
+                }
                 updateRecordButtonState();
                 updateDecodeStatusUi();
                 appendLog(
@@ -993,7 +1027,6 @@ public class MainActivity extends AppCompatActivity {
             pendingAutoPlay = false;
             appendLog("自动回归：收到新的启动参数，开始播放");
             tryStartPlayback();
-            scheduleAutomationActions();
         }
     }
 
@@ -1042,7 +1075,7 @@ public class MainActivity extends AppCompatActivity {
 
     /** 刷新播放进度 UI。 */
     private void updateProgressUi() {
-        if (player == null) {
+        if (player == null || player.getState() == ECHPlayer.State.PREPARING) {
             return;
         }
 
@@ -1082,6 +1115,16 @@ public class MainActivity extends AppCompatActivity {
 
     /** 更新录制按钮的显示文本。 */
     private void updateRecordButtonState() {
+        boolean preparing = player != null && player.getState() == ECHPlayer.State.PREPARING;
+        for (View control : new View[]{pauseButton, resumeButton, seekMiddleButton,
+                captureButton, recordButton, renderModeAutoButton, renderModeOpenGlButton,
+                renderModeNativeButton, decodeModeAutoButton, decodeModeSoftwareButton,
+                decodeModeMediaCodecButton}) {
+            control.setEnabled(!preparing);
+        }
+        if (preparing) {
+            progressSeekBar.setEnabled(false);
+        }
         if (player != null && player.getRecordingState() == ECHPlayer.RecordingState.RECORDING) {
             recordButton.setText("停止录制");
         } else if (player != null && player.getRecordingState() == ECHPlayer.RecordingState.STOPPING) {
@@ -1101,6 +1144,10 @@ public class MainActivity extends AppCompatActivity {
 
         if (player == null) {
             decodeStatusText.setText("当前解码：未开始");
+            return;
+        }
+        if (player.getState() == ECHPlayer.State.PREPARING) {
+            decodeStatusText.setText("正在连接或重连，可点击停止取消");
             return;
         }
 

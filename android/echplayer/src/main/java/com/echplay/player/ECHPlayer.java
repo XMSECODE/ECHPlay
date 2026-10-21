@@ -9,6 +9,9 @@ import android.media.AudioAttributes;
 import android.media.AudioTrack;
 import android.net.Uri;
 import android.os.ParcelFileDescriptor;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 
@@ -26,6 +29,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.function.Supplier;
+import java.util.function.BooleanSupplier;
 
 /**
  * Java 层播放器封装，负责桥接 UI 与 NativePlayer。
@@ -672,6 +677,28 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
 
     /** NativePlayer 指针句柄。 */
     private long nativeHandle = 0;
+    /** Native 阻塞任务；只有任务结束后才允许销毁或重用句柄。 */
+    private NativeTask nativeTask;
+    /** 正在执行 stop/reset/release 的线程，阻止其他调用插入清理过程。 */
+    private Thread controlThread;
+    /** 播放代次，取消后旧准备结果和排队回调均失效。 */
+    private long playbackGeneration;
+    /** Native 通知切到主线程，避免业务回调在解码线程中停止并等待自己。 */
+    private final Handler eventHandler = new Handler(Looper.getMainLooper());
+    /** 同步解码器选择回调只能返回选择结果，不能等待自身退出。 */
+    private final ThreadLocal<Boolean> selectingCodec = new ThreadLocal<>();
+    /** 停止时令音频非阻塞写入循环退出，再安全释放 AudioTrack。 */
+    private volatile boolean audioOutputStopped = true;
+
+    /** 一次 Native 调用的结果，所有字段都由播放器对象锁保护。 */
+    private static final class NativeTask {
+        /** 是否已退出 Native 调用。 */
+        boolean finished;
+        /** Native 返回的文本结果。 */
+        String result;
+        /** 工作线程异常，交回发起调用的线程处理。 */
+        Throwable failure;
+    }
     /** 当前对象是否已经释放。 */
     private boolean released = false;
     /** 当前播放器状态。 */
@@ -908,6 +935,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         }
 
         closeCurrentParcelFileDescriptor();
+        playbackGeneration++;
         currentParcelFileDescriptor = parcelFileDescriptor;
         nativeSetDataSource(nativeHandle, dataSource);
         applyDataSourceHeaders(headers);
@@ -1062,9 +1090,18 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
 
     /** 设置是否开启自动重连。 */
     public synchronized void setReconnectEnabled(boolean enabled) {
-        checkReleased();
+        awaitControlFinishedLocked();
+        if (released) {
+            throw new IllegalStateException("ECHPlayer has been released");
+        }
         reconnectEnabled = enabled;
         if (!enabled) {
+            if (reconnecting) {
+                playbackGeneration++;
+                audioOutputStopped = true;
+                nativeRequestInterrupt(nativeHandle);
+                state = State.STOPPED;
+            }
             cancelReconnectLocked();
         }
     }
@@ -1592,10 +1629,27 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     public synchronized String prepare() {
         checkReleased();
         requireState(State.INITIALIZED, State.STOPPED);
+        return prepareLocked(++playbackGeneration);
+    }
+
+    /** 执行准备；等待 Native 时释放对象锁，让 stop/reset/release 可以发送取消。 */
+    private String prepareLocked(long generation) {
+        if (!isPlaybackCurrentLocked(generation)) {
+            return "prepare cancelled";
+        }
         state = State.PREPARING;
         markPrepareStarted();
         dispatchInfo(INFO_PREPARE_STARTED, "prepare started");
-        lastPrepareResult = nativePrepare(nativeHandle);
+        if (!isPlaybackCurrentLocked(generation)) {
+            return "prepare cancelled";
+        }
+        long handle = nativeHandle;
+        nativeBeginPrepare(handle);
+        String result = runNativeTaskLocked(() -> nativePrepare(handle));
+        if (!isPlaybackCurrentLocked(generation)) {
+            return "prepare cancelled";
+        }
+        lastPrepareResult = result;
         markPrepareFinished();
         updateDecodeInfoFromNative();
         prepared = lastPrepareResult != null && lastPrepareResult.startsWith("prepare success");
@@ -1604,9 +1658,15 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         state = prepared ? State.PREPARED : State.ERROR;
         if (prepared) {
             updateVideoSizeFromNative();
+            if (!isPlaybackCurrentLocked(generation)) {
+                return "prepare cancelled";
+            }
             dispatchInfo(INFO_PREPARED, lastPrepareResult);
+            if (!isPlaybackCurrentLocked(generation)) {
+                return "prepare cancelled";
+            }
             dispatchBufferingUpdate(100);
-            if (onPreparedListener != null) {
+            if (isPlaybackCurrentLocked(generation) && onPreparedListener != null) {
                 onPreparedListener.onPrepared(this);
             }
         } else {
@@ -1623,34 +1683,10 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         checkReleased();
         requireState(State.INITIALIZED, State.STOPPED);
         state = State.PREPARING;
-        markPrepareStarted();
-        dispatchInfo(INFO_PREPARE_STARTED, "prepare started");
-
+        long generation = ++playbackGeneration;
         Thread prepareThread = new Thread(() -> {
             synchronized (ECHPlayer.this) {
-                if (!released && nativeHandle != 0) {
-                    lastPrepareResult = nativePrepare(nativeHandle);
-                    markPrepareFinished();
-                    updateDecodeInfoFromNative();
-                    prepared = lastPrepareResult != null
-                            && lastPrepareResult.startsWith("prepare success");
-                    playing = false;
-                    paused = false;
-                    state = prepared ? State.PREPARED : State.ERROR;
-                    if (prepared) {
-                        updateVideoSizeFromNative();
-                        dispatchInfo(INFO_PREPARED, lastPrepareResult);
-                        dispatchBufferingUpdate(100);
-                        if (onPreparedListener != null) {
-                            onPreparedListener.onPrepared(this);
-                        }
-                    } else {
-                        int errorCode = mapPrepareErrorCode(lastPrepareResult);
-                        if (!startReconnectIfNeededLocked(errorCode, lastPrepareResult)) {
-                            dispatchError(errorCode, lastPrepareResult);
-                        }
-                    }
-                }
+                prepareLocked(generation);
             }
         }, "ECHPlayer-Prepare");
         prepareThread.start();
@@ -1675,6 +1711,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         if (!playing) {
             markStartRequested();
         }
+        audioOutputStopped = false;
         lastStartResult = nativePlay(nativeHandle);
         if (lastStartResult != null
                 && (lastStartResult.startsWith("play started")
@@ -1693,6 +1730,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
 
     /** 暂停播放。 */
     public synchronized void pause() {
+        awaitNativeIdleLocked();
         if (!released && nativeHandle != 0) {
             requireState(State.STARTED, State.PAUSED);
             nativePause(nativeHandle);
@@ -1710,6 +1748,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
 
     /** 恢复播放。 */
     public synchronized void resume() {
+        awaitNativeIdleLocked();
         if (!released && nativeHandle != 0) {
             requireState(State.PAUSED, State.STARTED);
             if (audioTrack != null) {
@@ -1727,88 +1766,100 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
 
     /** 停止播放。 */
     public synchronized void stop() {
+        awaitControlFinishedLocked();
         if (!released && nativeHandle != 0) {
             if (state == State.IDLE || state == State.RELEASED) {
                 return;
             }
-            cancelReconnectLocked();
-            stopRecordingIfNeeded();
-            nativeStop(nativeHandle);
-            releaseAudioTrack();
-            prepared = false;
-            playing = false;
-            paused = false;
-            resetPlaybackTiming();
-            resetPlaybackEventFlags();
-            state = State.STOPPED;
+            beginControlLocked();
+            try {
+                long handle = nativeHandle;
+                runNativeTaskLocked(() -> { nativeStop(handle); return null; });
+                releaseAudioTrack();
+                recordingState = RecordingState.IDLE;
+                prepared = false;
+                playing = false;
+                paused = false;
+                resetPlaybackTiming();
+                resetPlaybackEventFlags();
+                state = State.STOPPED;
+            } finally {
+                endControlLocked();
+            }
             dispatchInfo(INFO_STOPPED, "stop");
         }
     }
 
     /** 重置播放器，回到可重新设置数据源的初始状态。 */
     public synchronized void reset() {
-        checkReleased();
-
-        cancelReconnectLocked();
-        stopRecordingIfNeeded();
-        nativeStop(nativeHandle);
-        releaseAudioTrack();
-        nativeRelease(nativeHandle);
-        nativeHandle = nativeInit();
-        closeCurrentParcelFileDescriptor();
-        prepared = false;
-        playing = false;
-        paused = false;
-        lastPrepareResult = "";
-        lastStartResult = "";
-        rtspTransport = RTSP_TRANSPORT_TCP;
-        renderMode = RENDER_MODE_AUTO;
-        decodeMode = DECODE_MODE_AUTO;
-        nativeSetDecodeMode(nativeHandle, decodeMode);
-        nativeSetRenderMode(nativeHandle, renderMode);
-        nativeSetRtspTransport(nativeHandle, rtspTransport);
-        currentDecodeType = "software";
-        currentDecoderName = "ffmpeg";
-        lastDecodeFallbackReason = "";
-        mediaCodecAvcEnabled = true;
-        mediaCodecHevcEnabled = true;
-        mediaCodecAutoRotateEnabled = true;
-        mediaCodecHandleResolutionChangeEnabled = true;
-        recordingState = RecordingState.IDLE;
-        lastRecordingPath = "";
-        currentDataSource = "";
-        currentDataSourceHeaders.clear();
-        longOptions.clear();
-        stringOptions.clear();
-        displayHolder = null;
-        leftVolume = 1.0f;
-        rightVolume = 1.0f;
-        muted = false;
-        playbackSpeed = 1.0f;
-        audioDelayMs = 0.0f;
-        audioFocusGranted = false;
-        audioFocusRequest = null;
-        cacheEnabled = false;
-        cacheDirectory = "";
-        maxCacheBytes = 0L;
-        selectedVideoTrack = -1;
-        selectedAudioTrack = -1;
-        selectedTimedTextTrack = -1;
-        externalSubtitleCues.clear();
-        lastDispatchedSubtitleCueIndex = -1;
-        looping = false;
-        latestSeekLoadDurationMs = -1L;
-        accurateSeekEnabled = false;
-        applyMediaCodecOptions();
-        bufferingStartPercent = 5;
-        bufferingEndPercent = 95;
-        lastBufferingPercent = 100;
-        reconnectCount = 0;
-        reconnecting = false;
-        resetPlaybackTiming();
-        resetVideoSize();
-        resetPlaybackEventFlags();
-        state = State.IDLE;
+        awaitControlFinishedLocked();
+        if (released) {
+            throw new IllegalStateException("ECHPlayer has been released");
+        }
+        beginControlLocked();
+        try {
+            long handle = nativeHandle;
+            runNativeTaskLocked(() -> { nativeRelease(handle); return null; });
+            nativeHandle = 0;
+            releaseAudioTrack();
+            nativeHandle = nativeInit();
+            closeCurrentParcelFileDescriptor();
+            prepared = false;
+            playing = false;
+            paused = false;
+            lastPrepareResult = "";
+            lastStartResult = "";
+            rtspTransport = RTSP_TRANSPORT_TCP;
+            renderMode = RENDER_MODE_AUTO;
+            decodeMode = DECODE_MODE_AUTO;
+            nativeSetDecodeMode(nativeHandle, decodeMode);
+            nativeSetRenderMode(nativeHandle, renderMode);
+            nativeSetRtspTransport(nativeHandle, rtspTransport);
+            currentDecodeType = "software";
+            currentDecoderName = "ffmpeg";
+            lastDecodeFallbackReason = "";
+            mediaCodecAvcEnabled = true;
+            mediaCodecHevcEnabled = true;
+            mediaCodecAutoRotateEnabled = true;
+            mediaCodecHandleResolutionChangeEnabled = true;
+            recordingState = RecordingState.IDLE;
+            lastRecordingPath = "";
+            currentDataSource = "";
+            currentDataSourceHeaders.clear();
+            longOptions.clear();
+            stringOptions.clear();
+            displayHolder = null;
+            leftVolume = 1.0f;
+            rightVolume = 1.0f;
+            muted = false;
+            playbackSpeed = 1.0f;
+            audioDelayMs = 0.0f;
+            audioFocusGranted = false;
+            audioFocusRequest = null;
+            cacheEnabled = false;
+            cacheDirectory = "";
+            maxCacheBytes = 0L;
+            selectedVideoTrack = -1;
+            selectedAudioTrack = -1;
+            selectedTimedTextTrack = -1;
+            externalSubtitleCues.clear();
+            lastDispatchedSubtitleCueIndex = -1;
+            looping = false;
+            latestSeekLoadDurationMs = -1L;
+            accurateSeekEnabled = false;
+            applyMediaCodecOptions();
+            bufferingStartPercent = 5;
+            bufferingEndPercent = 95;
+            lastBufferingPercent = 100;
+            reconnectCount = 0;
+            reconnecting = false;
+            resetPlaybackTiming();
+            resetVideoSize();
+            resetPlaybackEventFlags();
+            state = State.IDLE;
+        } finally {
+            endControlLocked();
+        }
     }
 
     /** 跳转到指定毫秒位置。 */
@@ -1908,6 +1959,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
 
     /** 返回当前媒体是否支持 seek。 */
     public synchronized boolean isSeekable() {
+        awaitNativeIdleLocked();
         return !released && nativeIsSeekable(nativeHandle);
     }
 
@@ -2158,6 +2210,9 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
 
     /** 返回当前是否正在录制。 */
     public synchronized boolean isRecording() {
+        if (!released && (nativeTask != null || controlThread != null)) {
+            return false;
+        }
         checkReleased();
         return nativeIsRecording(nativeHandle);
     }
@@ -2180,27 +2235,32 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
 
     /** 释放播放器实例。 */
     public synchronized void release() {
+        awaitControlFinishedLocked();
         if (!released) {
-            cancelReconnectLocked();
-            stopRecordingIfNeeded();
-            nativeRelease(nativeHandle);
-            nativeHandle = 0;
-            closeCurrentParcelFileDescriptor();
-            released = true;
-            prepared = false;
-            playing = false;
-            paused = false;
-            recordingState = RecordingState.IDLE;
-            audioFocusGranted = false;
-            audioFocusRequest = null;
-            cacheEnabled = false;
-            resetPlaybackTiming();
-            resetVideoSize();
-            latestSeekLoadDurationMs = -1L;
-            lastBufferingPercent = 100;
-            state = State.RELEASED;
+            beginControlLocked();
+            try {
+                long handle = nativeHandle;
+                runNativeTaskLocked(() -> { nativeRelease(handle); return null; });
+                nativeHandle = 0;
+                closeCurrentParcelFileDescriptor();
+                released = true;
+                prepared = false;
+                playing = false;
+                paused = false;
+                recordingState = RecordingState.IDLE;
+                audioFocusGranted = false;
+                audioFocusRequest = null;
+                cacheEnabled = false;
+                resetPlaybackTiming();
+                resetVideoSize();
+                latestSeekLoadDurationMs = -1L;
+                lastBufferingPercent = 100;
+                state = State.RELEASED;
 
-            releaseAudioTrack();
+                releaseAudioTrack();
+            } finally {
+                endControlLocked();
+            }
         }
     }
 
@@ -2211,6 +2271,9 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
 
     /** Native 回调：初始化 AudioTrack 参数。 */
     private synchronized void onNativeAudioInfo(int sampleRate, int channels) {
+        if (audioOutputStopped || released || controlThread != null) {
+            return;
+        }
         releaseAudioTrack();
 
         int channelConfig = channels == 1
@@ -2242,7 +2305,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         audioTrack.play();
         if (!audioRenderingStarted) {
             audioRenderingStarted = true;
-            dispatchInfo(INFO_AUDIO_RENDERING_START, "audio rendering started");
+            postNativeEvent(() -> dispatchInfo(INFO_AUDIO_RENDERING_START, "audio rendering started"));
         }
     }
 
@@ -2254,52 +2317,187 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
             track = audioTrack;
         }
 
-        if (track != null && data != null && size > 0) {
-            track.write(data, 0, size);
+        int offset = 0;
+        int length = data == null ? 0 : Math.min(size, data.length);
+        while (track != null && offset < length && !audioOutputStopped) {
+            int written = track.write(data, offset, length - offset, AudioTrack.WRITE_NON_BLOCKING);
+            if (written < 0) {
+                break;
+            }
+            offset += written;
+            if (written == 0) {
+                SystemClock.sleep(5L);
+            }
         }
     }
 
     /** Native 回调：播放器信息事件。 */
     private synchronized void onNativeInfo(int infoCode, String message) {
-        if (infoCode == INFO_BUFFERING_START) {
-            dispatchBufferingUpdate(bufferingStartPercent);
-        } else if (infoCode == INFO_BUFFERING_END) {
-            dispatchBufferingUpdate(bufferingEndPercent);
-        } else if (infoCode == INFO_MEDIACODEC_FORMAT_CHANGED) {
-            updateVideoSizeFromNative();
-        }
-        dispatchInfo(infoCode, message);
+        postNativeEvent(() -> {
+            if (infoCode == INFO_BUFFERING_START) {
+                dispatchBufferingUpdate(bufferingStartPercent);
+            } else if (infoCode == INFO_BUFFERING_END) {
+                dispatchBufferingUpdate(bufferingEndPercent);
+            } else if (infoCode == INFO_MEDIACODEC_FORMAT_CHANGED) {
+                updateVideoSizeFromNative();
+            }
+            dispatchInfo(infoCode, message);
+        });
     }
 
     /** Native 回调：询问 Java 层是否允许指定 MediaCodec。 */
     @SuppressWarnings("unused")
     private synchronized boolean onNativeMediaCodecSelect(String mimeType, String codecName) {
+        if (controlThread != null || released || audioOutputStopped) {
+            return false;
+        }
         if (onMediaCodecSelectListener == null) {
             return true;
         }
-        return onMediaCodecSelectListener.onMediaCodecSelect(
-                this,
-                mimeType == null ? "" : mimeType,
-                codecName == null ? "" : codecName
-        );
+        selectingCodec.set(true);
+        try {
+            return onMediaCodecSelectListener.onMediaCodecSelect(
+                    this,
+                    mimeType == null ? "" : mimeType,
+                    codecName == null ? "" : codecName
+            );
+        } catch (RuntimeException error) {
+            postNativeEvent(() -> dispatchInfo(INFO_MEDIACODEC_FALLBACK,
+                    "codec selector failed: " + error.getMessage()));
+            return false;
+        } finally {
+            selectingCodec.remove();
+        }
     }
 
     /** Native 回调：播放器错误事件。 */
     private synchronized void onNativeError(int errorCode, String message) {
-        if (startReconnectIfNeededLocked(errorCode, message)) {
-            return;
-        }
-        if (state != State.RELEASED) {
-            state = State.ERROR;
-            playing = false;
-            paused = false;
-        }
-        dispatchError(errorCode, message);
+        postNativeEvent(() -> {
+            if (startReconnectIfNeededLocked(errorCode, message)) {
+                return;
+            }
+            if (state != State.RELEASED) {
+                state = State.ERROR;
+                playing = false;
+                paused = false;
+            }
+            dispatchError(errorCode, message);
+        });
     }
 
     /** Native 回调：视频尺寸发生变化。 */
     private synchronized void onNativeVideoSizeChanged(int width, int height) {
-        updateVideoSize(width, height);
+        postNativeEvent(() -> updateVideoSize(width, height));
+    }
+
+    /** 延迟 Native 通知，取消后丢弃旧代次回调。 */
+    private void postNativeEvent(Runnable event) {
+        if (released || controlThread != null) {
+            return;
+        }
+        long generation = playbackGeneration;
+        eventHandler.post(() -> {
+            synchronized (ECHPlayer.this) {
+                if (isPlaybackCurrentLocked(generation)) {
+                    event.run();
+                }
+            }
+        });
+    }
+
+    /** 在工作线程执行可能阻塞的 Native 调用；wait 会释放播放器对象锁。 */
+    private String runNativeTaskLocked(Supplier<String> operation) {
+        if (nativeTask != null) {
+            throw new IllegalStateException("another native task is still running");
+        }
+        NativeTask task = new NativeTask();
+        nativeTask = task;
+        Thread worker = new Thread(() -> {
+            String result = null;
+            Throwable failure = null;
+            try {
+                result = operation.get();
+            } catch (Throwable error) {
+                failure = error;
+            }
+            synchronized (ECHPlayer.this) {
+                task.result = result;
+                task.failure = failure;
+                task.finished = true;
+                nativeTask = null;
+                ECHPlayer.this.notifyAll();
+            }
+        }, "ECHPlayer-NativeTask");
+        try {
+            worker.start();
+        } catch (RuntimeException | Error error) {
+            nativeTask = null;
+            notifyAll();
+            throw error;
+        }
+        waitUntilLocked(() -> task.finished);
+        if (task.failure instanceof Error) {
+            throw (Error) task.failure;
+        }
+        if (task.failure != null) {
+            throw new IllegalStateException("native task failed", task.failure);
+        }
+        return task.result;
+    }
+
+    /** 等到条件成立再返回，保留中断状态，避免任务未退出就释放 Native 内存。 */
+    private void waitUntilLocked(BooleanSupplier condition) {
+        boolean interrupted = false;
+        while (!condition.getAsBoolean()) {
+            try {
+                wait();
+            } catch (InterruptedException ignored) {
+                interrupted = true;
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /** 串行化生命周期清理；同步解码器选择回调不得停止其所在的解码线程。 */
+    private void awaitControlFinishedLocked() {
+        if (Boolean.TRUE.equals(selectingCodec.get())) {
+            throw new IllegalStateException("codec selector must only return a decoder decision");
+        }
+        waitUntilLocked(() -> controlThread == null || controlThread == Thread.currentThread());
+    }
+
+    /** 常规 JNI 调用等待准备或释放结束，避免读取正在重建的 AVFormatContext。 */
+    private void awaitNativeIdleLocked() {
+        if (Boolean.TRUE.equals(selectingCodec.get())
+                && (nativeTask != null || controlThread != null)) {
+            throw new IllegalStateException("native task is busy during codec selection");
+        }
+        waitUntilLocked(() -> nativeTask == null
+                && (controlThread == null || controlThread == Thread.currentThread()));
+    }
+
+    /** 先使旧任务失效并发送取消，再等待它退出；等待期间仍允许 Native 回调返回。 */
+    private void beginControlLocked() {
+        controlThread = Thread.currentThread();
+        playbackGeneration++;
+        audioOutputStopped = true;
+        cancelReconnectLocked();
+        nativeRequestInterrupt(nativeHandle);
+        waitUntilLocked(() -> nativeTask == null);
+    }
+
+    /** 清理完成后唤醒等待常规 API 的线程。 */
+    private void endControlLocked() {
+        controlThread = null;
+        notifyAll();
+    }
+
+    /** 只允许当前生命周期发布准备结果或回调。 */
+    private boolean isPlaybackCurrentLocked(long generation) {
+        return !released && nativeHandle != 0 && controlThread == null
+                && playbackGeneration == generation;
     }
 
     /** 释放当前 AudioTrack。 */
@@ -2318,17 +2516,9 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
 
     /** 检查播放器是否已经释放。 */
     private void checkReleased() {
+        awaitNativeIdleLocked();
         if (released || nativeHandle == 0) {
             throw new IllegalStateException("ECHPlayer has been released");
-        }
-    }
-
-    /** 如果正在录制则安全停止。 */
-    private void stopRecordingIfNeeded() {
-        if (nativeHandle != 0 && nativeIsRecording(nativeHandle)) {
-            recordingState = RecordingState.STOPPING;
-            nativeStopRecording(nativeHandle);
-            recordingState = RecordingState.IDLE;
         }
     }
 
@@ -2498,6 +2688,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     private void cancelReconnectLocked() {
         reconnecting = false;
         reconnectGeneration++;
+        notifyAll();
     }
 
     /** 判断当前错误是否应该触发自动重连。 */
@@ -2510,6 +2701,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         }
 
         reconnecting = true;
+        playbackGeneration++;
         prepared = false;
         playing = false;
         paused = false;
@@ -2582,14 +2774,21 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
             }
 
             if (delayMs > 0) {
-                try {
-                    Thread.sleep(delayMs);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    synchronized (this) {
-                        finishReconnectFailedLocked(originalErrorCode, "reconnect interrupted");
+                synchronized (this) {
+                    long startedAt = SystemClock.elapsedRealtime();
+                    long remaining = delayMs;
+                    while (isReconnectActiveLocked(generation) && remaining > 0) {
+                        try {
+                            wait(remaining);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            if (isReconnectActiveLocked(generation)) {
+                                finishReconnectFailedLocked(originalErrorCode, "reconnect interrupted");
+                            }
+                            return;
+                        }
+                        remaining = delayMs - (SystemClock.elapsedRealtime() - startedAt);
                     }
-                    return;
                 }
             }
 
@@ -2598,8 +2797,14 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
                     return;
                 }
 
-                nativeStop(nativeHandle);
+                audioOutputStopped = true;
+                long handle = nativeHandle;
+                runNativeTaskLocked(() -> { nativeStop(handle); return null; });
+                if (!isReconnectActiveLocked(generation)) {
+                    return;
+                }
                 releaseAudioTrack();
+                recordingState = RecordingState.IDLE;
                 resetPlaybackEventFlags();
                 prepared = false;
                 playing = false;
@@ -2612,7 +2817,12 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
                 nativeSetDecodeMode(nativeHandle, decodeMode);
 
                 markPrepareStarted();
-                lastPrepareResult = nativePrepare(nativeHandle);
+                nativeBeginPrepare(handle);
+                String result = runNativeTaskLocked(() -> nativePrepare(handle));
+                if (!isReconnectActiveLocked(generation)) {
+                    return;
+                }
+                lastPrepareResult = result;
                 markPrepareFinished();
                 updateDecodeInfoFromNative();
                 prepared = lastPrepareResult != null
@@ -2628,10 +2838,20 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
                 }
 
                 updateVideoSizeFromNative();
+                if (!isReconnectActiveLocked(generation)) {
+                    return;
+                }
                 dispatchInfo(INFO_PREPARED, lastPrepareResult);
+                if (!isReconnectActiveLocked(generation)) {
+                    return;
+                }
                 dispatchBufferingUpdate(100);
+                if (!isReconnectActiveLocked(generation)) {
+                    return;
+                }
 
                 markStartRequested();
+                audioOutputStopped = false;
                 lastStartResult = nativePlay(nativeHandle);
                 if (lastStartResult != null
                         && (lastStartResult.startsWith("play started")
@@ -2664,6 +2884,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     /** 判断指定重连代次是否仍然有效。 */
     private boolean isReconnectActiveLocked(int generation) {
         return reconnecting
+                && controlThread == null
                 && !released
                 && nativeHandle != 0
                 && reconnectGeneration == generation;
@@ -3112,7 +3333,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
 
     /** 从 native 刷新当前实际解码信息。 */
     private void updateDecodeInfoFromNative() {
-        if (nativeHandle == 0) {
+        if (nativeHandle == 0 || nativeTask != null || controlThread != null) {
             return;
         }
 
@@ -3380,6 +3601,12 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
 
     /** 调用 NativePlayer.prepare。 */
     private native String nativePrepare(long nativeHandle);
+
+    /** 在任务启动前清除上一轮 I/O 取消标记。 */
+    private native void nativeBeginPrepare(long nativeHandle);
+
+    /** 并发发送 I/O 取消请求，调用时句柄仍由播放器持有。 */
+    private native void nativeRequestInterrupt(long nativeHandle);
 
     /** 调用 NativePlayer.play。 */
     private native String nativePlay(long nativeHandle);
