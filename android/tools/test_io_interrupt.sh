@@ -25,3 +25,12 @@ c++ -std=c++17 -pthread -Wall -Wextra -Werror \
 
 "$TASK_BUILD/io_interrupt_test" "$TASK_BUILD/sample.ts" \
     "$TASK_ROOT/app/src/androidTest/assets/data_source_sample.mp4"
+
+# 使用真实 RTSP 响应验证错误分类，覆盖旧日志文本匹配容易误判的地址。
+c++ -std=c++17 -pthread -Wall -Wextra -Werror \
+    -I"$TASK_ROOT/echplayer/src/main/cpp" \
+    $(pkg-config --cflags libavformat libavcodec libavutil) \
+    "$TASK_ROOT/tools/tests/player_error_integration.cpp" \
+    $(pkg-config --libs libavformat libavcodec libavutil) \
+    -o "$TASK_BUILD/player_error_test"
+"$TASK_BUILD/player_error_test"

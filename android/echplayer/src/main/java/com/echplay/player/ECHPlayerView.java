@@ -545,6 +545,17 @@ public class ECHPlayerView extends LinearLayout {
 
         if (infoCode == ECHPlayer.INFO_PREPARE_STARTED) {
             updateViewState(ViewState.LOADING, "正在准备播放...", false);
+        } else if (infoCode == ECHPlayer.INFO_RECONNECTING) {
+            ECHPlayer.ReconnectState reconnect = targetPlayer.getReconnectState();
+            // UI 消息可能晚于后台重连结束，只显示仍然有效的阶段。
+            if (reconnect == ECHPlayer.ReconnectState.WAITING
+                    || reconnect == ECHPlayer.ReconnectState.CONNECTING) {
+                stopProgressUpdates();
+                String phase = reconnect == ECHPlayer.ReconnectState.WAITING ? "等待重连" : "正在重连";
+                updateViewState(ViewState.LOADING, phase + "（已尝试 "
+                        + targetPlayer.getReconnectAttemptCount() + "/"
+                        + targetPlayer.getReconnectMaxAttempts() + " 次），可点击停止取消", false);
+            }
         } else if (infoCode == ECHPlayer.INFO_PREPARED) {
             if (targetPlayer.isPrepared()) {
                 emitMediaAndTrackInfo(targetPlayer);
@@ -553,6 +564,7 @@ public class ECHPlayerView extends LinearLayout {
         } else if (infoCode == ECHPlayer.INFO_BUFFERING_START) {
             updateViewState(ViewState.BUFFERING, "正在缓冲...", false);
         } else if (infoCode == ECHPlayer.INFO_BUFFERING_END
+                || infoCode == ECHPlayer.INFO_RECONNECTED
                 || infoCode == ECHPlayer.INFO_PLAY_STARTED
                 || infoCode == ECHPlayer.INFO_VIDEO_RENDERING_START) {
             updateViewState(ViewState.PLAYING, "", false);
@@ -1133,7 +1145,31 @@ public class ECHPlayerView extends LinearLayout {
         if (safeMessage.length() > 80) {
             safeMessage = safeMessage.substring(0, 80) + "...";
         }
-        return "播放失败，请检查地址或网络\n错误码: " + errorCode
+        String hint;
+        switch (errorCode) {
+            case ECHPlayer.ERROR_RTSP_AUTH_FAILED:
+                hint = "鉴权失败，请检查用户名和密码";
+                break;
+            case ECHPlayer.ERROR_SOURCE_NOT_FOUND:
+                hint = "媒体资源不存在，请检查播放地址";
+                break;
+            case ECHPlayer.ERROR_ACCESS_DENIED:
+                hint = "没有访问权限，请检查服务端授权";
+                break;
+            case ECHPlayer.ERROR_INVALID_SOURCE:
+            case ECHPlayer.ERROR_UNSUPPORTED_PROTOCOL:
+                hint = "地址或媒体不受支持，请检查播放来源";
+                break;
+            case ECHPlayer.ERROR_NETWORK_TIMEOUT:
+            case ECHPlayer.ERROR_CONNECTION_FAILED:
+            case ECHPlayer.ERROR_CONNECTION_LOST:
+                hint = "连接失败，请检查设备和网络后重试";
+                break;
+            default:
+                hint = "播放失败，请检查地址或媒体格式";
+                break;
+        }
+        return hint + "\n错误码: " + errorCode
                 + (safeMessage.length() == 0 ? "" : "\n" + safeMessage);
     }
 

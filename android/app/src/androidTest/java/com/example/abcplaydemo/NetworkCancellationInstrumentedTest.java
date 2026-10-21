@@ -139,7 +139,7 @@ public class NetworkCancellationInstrumentedTest {
         }
     }
 
-    /** 第一次连接被断开、第二次连接不回应时，stop 可取消自动重连。 */
+    /** 第一次服务暂不可用、第二次连接不回应时，stop 可取消自动重连。 */
     @Test
     public void stopCancelsReconnectPrepare() throws Exception {
         startStalledPrepare(true);
@@ -212,7 +212,7 @@ public class NetworkCancellationInstrumentedTest {
         assertNoTerminalEvents();
     }
 
-    /** 在已连接的套接字上等待取消；重连用例先主动关闭第一次连接。 */
+    /** 在已连接的套接字上等待取消；重连用例首次返回明确的暂时故障。 */
     private void startStalledPrepare(boolean reconnect) throws Exception {
         configureServer(reconnect);
         player.setReconnectEnabled(reconnect);
@@ -254,7 +254,7 @@ public class NetworkCancellationInstrumentedTest {
         /** 服务线程，只负责接受连接。 */
         final Thread thread;
 
-        /** 根据用例要求断开第一条连接，后续连接保持无响应。 */
+        /** 根据用例要求首次返回 503，后续连接保持无响应。 */
         StalledRtspServer(boolean rejectFirst) throws IOException {
             listener = new ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"));
             thread = new Thread(() -> {
@@ -266,6 +266,7 @@ public class NetworkCancellationInstrumentedTest {
                         }
                         int index = connections.getAndIncrement();
                         if (rejectFirst && index == 0) {
+                            RtspErrorTestServer.respond(client, 503);
                             client.close();
                         }
                         if (index < accepted.length) {

@@ -1,6 +1,7 @@
 #include "NativePlayer.h"
 
 #include "MediaCodecVideoDecoder.h"
+#include "PlayerError.h"
 
 #include <android/log.h>
 #include <android/native_window.h>
@@ -36,8 +37,6 @@ static constexpr size_t AUDIO_PACKET_QUEUE_MAX = 240;
 static constexpr int64_t AV_SYNC_THRESHOLD_MIN_US = 40000;   // 40ms
 static constexpr int64_t AV_SYNC_THRESHOLD_MAX_US = 100000;  // 100ms
 static constexpr int64_t AV_NOSYNC_THRESHOLD_US = 10000000;  // 10s
-static constexpr int PLAYER_ERROR_NETWORK_TIMEOUT = 1005;
-static constexpr int PLAYER_ERROR_UNKNOWN = 1999;
 static constexpr int PLAYER_INFO_BUFFERING_START = 2011;
 static constexpr int PLAYER_INFO_BUFFERING_END = 2012;
 static constexpr int PLAYER_INFO_DECODE_MODE_CHANGED = 2013;
@@ -353,6 +352,12 @@ bool NativePlayer::setStringOption(int category, const std::string &name, const 
 /** 准备任务在 Java 锁内登记后清除取消标记，避免覆盖随后到达的停止请求。 */
 void NativePlayer::beginPrepare() {
     ioInterrupt.reset();
+    prepareErrorCode = 0;
+}
+
+/** 返回准备任务结束后的数值错误，不依赖日志内容。 */
+int NativePlayer::getPrepareErrorCode() const {
+    return prepareErrorCode.load();
 }
 
 /** 无需等待网络线程或 Java 回调，立即发布取消请求。 */
@@ -371,6 +376,7 @@ int NativePlayer::interruptIo(void *opaque) {
 /** 打开输入流并读取音视频信息。 */
 std::string NativePlayer::prepare() {
     if (dataSource.empty()) {
+        prepareErrorCode = PlayerError::INVALID_SOURCE;
         return "prepare failed: dataSource is empty";
     }
 
@@ -378,11 +384,13 @@ std::string NativePlayer::prepare() {
     resetPlaybackStats();
     stopRequested = false;
     if (ioInterrupt.isCancelled()) {
+        prepareErrorCode = PlayerError::CANCELLED;
         return "prepare cancelled";
     }
 
     formatContext = avformat_alloc_context();
     if (formatContext == nullptr) {
+        prepareErrorCode = PlayerError::UNKNOWN;
         return "prepare failed: cannot allocate format context";
     }
     formatContext->interrupt_callback = {interruptIo, this};
@@ -421,6 +429,7 @@ std::string NativePlayer::prepare() {
     ioInterrupt.end();
     av_dict_free(&options);
     if (ioInterrupt.isCancelled()) {
+        prepareErrorCode = PlayerError::CANCELLED;
         releaseFormatContext();
         return "prepare cancelled";
     }
@@ -428,6 +437,7 @@ std::string NativePlayer::prepare() {
         ret = AVERROR(ETIMEDOUT);
     }
     if (ret < 0) {
+        prepareErrorCode = PlayerError::fromAvError(ret, networkSource, PlayerError::OPEN_INPUT);
         std::string error = makeErrorString(ret);
         ECH_LOGE("avformat_open_input failed: %s", error.c_str());
         releaseFormatContext();
@@ -443,6 +453,7 @@ std::string NativePlayer::prepare() {
     ret = avformat_find_stream_info(formatContext, nullptr);
     ioInterrupt.end();
     if (ioInterrupt.isCancelled()) {
+        prepareErrorCode = PlayerError::CANCELLED;
         releaseFormatContext();
         return "prepare cancelled";
     }
@@ -450,6 +461,7 @@ std::string NativePlayer::prepare() {
         ret = AVERROR(ETIMEDOUT);
     }
     if (ret < 0) {
+        prepareErrorCode = PlayerError::fromAvError(ret, networkSource, PlayerError::STREAM_INFO);
         std::string error = makeErrorString(ret);
         ECH_LOGE("avformat_find_stream_info failed: %s", error.c_str());
 
@@ -480,6 +492,7 @@ std::string NativePlayer::prepare() {
     );
 
     if (videoStreamIndex < 0) {
+        prepareErrorCode = PlayerError::NO_VIDEO;
         releaseFormatContext();
         return "prepare failed: no video stream found";
     }
@@ -1145,12 +1158,13 @@ void NativePlayer::demuxLoop() {
             ret = AVERROR(ETIMEDOUT);
         }
         if (ret < 0) {
-            if (ret != AVERROR_EOF && !stopRequested.load()) {
+            // RTSP 直播 EOF 表示断流；文件和 HTTP 点播的正常 EOF 仍按播放完成处理。
+            if ((ret != AVERROR_EOF || isRtspSource(dataSource))
+                    && !stopRequested.load() && !ioInterrupt.isCancelled()) {
                 std::string error = makeErrorString(ret);
                 ECH_LOGE("av_read_frame failed: %s", error.c_str());
-                int errorCode = ret == AVERROR(ETIMEDOUT)
-                                ? PLAYER_ERROR_NETWORK_TIMEOUT
-                                : PLAYER_ERROR_UNKNOWN;
+                int errorCode = PlayerError::fromAvError(
+                        ret, isNetworkSource(dataSource), PlayerError::UNKNOWN);
                 notifyError(errorCode, "network read failed: " + error);
             }
             break;

@@ -231,6 +231,13 @@ Java_com_echplay_player_ECHPlayer_nativeRequestInterrupt(JNIEnv *, jobject, jlon
     }
 }
 
+/** 读取准备错误码，Java 在确认任务未取消后调用。 */
+extern "C" JNIEXPORT jint JNICALL
+Java_com_echplay_player_ECHPlayer_nativeGetPrepareErrorCode(JNIEnv *, jobject, jlong handle) {
+    auto *player = getPlayer(handle);
+    return player == nullptr ? 1999 : player->getPrepareErrorCode();
+}
+
 extern "C"
 JNIEXPORT jstring JNICALL
 Java_com_echplay_player_ECHPlayer_nativePrepare(

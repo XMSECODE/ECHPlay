@@ -1,6 +1,6 @@
 # ECHPlay
 
-当前完善进度（2026-10-21）：对照原始路线图，v2.1-v2.9 仍有未完成项，详见 [实际完成度与补齐顺序](v2.1-v2.9_completion_audit.md)。已修复 content Uri/fd 数据源，并接入网络 I/O 取消和生命周期任务回收，Demo/PlayerView 使用异步准备。实现边界、回调线程变化与验证结果见 [网络取消验证记录](network_cancellation_validation.md)；设备验收仍待执行。
+当前完善进度（2026-10-21）：对照原始路线图，v2.1-v2.9 仍有未完成项，详见 [实际完成度与补齐顺序](v2.1-v2.9_completion_audit.md)。已修复 content Uri/fd 数据源、网络 I/O 取消和生命周期回收，Demo/PlayerView 使用异步准备。本轮接入数值错误分类、每轮独立重连预算和可查询重连状态，见 [错误分类与重连验证记录](network_reconnect_validation.md)。本机构建和单元测试通过，真机首轮通过 22 项；Demo 页面启动阻塞及最终代码设备复测仍待完成。
 
 ECHPlay 是一个基于 FFmpeg 和 Android MediaCodec 的 Android 播放器项目。v1.4 已补齐硬解能力：在 v1.3 OpenGL ES、YUV420P 三纹理、渲染模式切换、视频尺寸回调和 `ECHPlayerView` 画面比例控制基础上，新增 H.264 / H.265 MediaCodec 硬解、软硬解切换、失败回退和当前解码方式展示。v1.5 进入网络播放稳定性和可观测性阶段，重点推进 HTTP / HTTPS / HLS / RTSP 验证、RTSP 自动重连、播放统计和 PlayerView 基础状态。v1.6 进一步补齐媒体信息、轨道信息、prepare 耗时、首帧耗时、render fps、渲染帧数和丢帧统计，让 Demo 与业务侧都能更快定位播放问题。
 
@@ -424,9 +424,11 @@ for (ECHPlayer.TrackInfo track : tracks) {
 2. `INFO_MEDIACODEC_OPENED`：MediaCodec 创建并启动成功。
 3. `INFO_MEDIACODEC_FALLBACK`：硬解失败，已回退软解。
 4. `INFO_MEDIACODEC_UNSUPPORTED`：当前编码或设备不支持硬解。
-5. `INFO_RECONNECTING`：RTSP 正在按配置自动重连。
-6. `INFO_RECONNECTED`：RTSP 自动重连成功并恢复播放。
-7. `INFO_RECONNECT_FAILED`：RTSP 自动重连达到上限后失败。
+5. `INFO_RECONNECTING`：RTSP 重连处于等待或连接阶段，使用 `getReconnectState()` 区分。
+6. `INFO_RECONNECTED`：RTSP 重连成功并恢复播放。
+7. `INFO_RECONNECT_FAILED`：达到本轮上限或出现不可重试错误，随后报告最后一次失败原因。
+
+自动重连只处理明确的暂时性网络错误，鉴权和资源错误不重试。每次断线重新获得配置的预算；`getReconnectAttemptCount()` 是本轮次数，`getReconnectCount()` 是当前数据源累计次数。手动 `reconnectImmediately()` 独立尝试一次，不受自动开关和间隔限制。完整语义及错误码见 [重连 API 与验证说明](network_reconnect_validation.md)。
 
 截图示例：
 

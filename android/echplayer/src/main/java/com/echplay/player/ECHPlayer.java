@@ -65,9 +65,23 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         RELEASED
     }
 
-    /**
-     * 录制状态机，用于让外部页面明确知道当前录制阶段。
-     */
+    /** 重连状态独立于播放器状态；等待和连接时播放器仍为 PREPARING。 */
+    public enum ReconnectState {
+        /** 当前数据源尚未发起重连。 */
+        IDLE,
+        /** 等待下一次尝试，尚未消耗次数。 */
+        WAITING,
+        /** 正在连接和准备媒体。 */
+        CONNECTING,
+        /** 已成功恢复播放。 */
+        SUCCEEDED,
+        /** 遇到不可重试错误或次数耗尽。 */
+        FAILED,
+        /** 用户主动停止、重置、释放或关闭重连。 */
+        CANCELLED
+    }
+
+    /** 录制状态机，用于让外部页面明确知道当前录制阶段。 */
     public enum RecordingState {
         /** 当前没有录制任务。 */
         IDLE,
@@ -395,9 +409,9 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     public static final int ERROR_NO_VIDEO_STREAM = 1003;
     /** 解码器打开失败。 */
     public static final int ERROR_DECODER_OPEN_FAILED = 1004;
-    /** 网络超时。 */
+    /** 网络连接或读取超时。 */
     public static final int ERROR_NETWORK_TIMEOUT = 1005;
-    /** RTSP 鉴权失败。 */
+    /** HTTP/RTSP 鉴权失败，保留原常量名称以兼容已有调用方。 */
     public static final int ERROR_RTSP_AUTH_FAILED = 1006;
     /** 渲染 Surface 无效。 */
     public static final int ERROR_RENDER_SURFACE_INVALID = 1007;
@@ -407,6 +421,20 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     public static final int ERROR_INVALID_STATE = 1009;
     /** 当前媒体流不支持 seek。 */
     public static final int ERROR_STREAM_NOT_SEEKABLE = 1010;
+    /** 连接被拒绝、网络不可达或服务暂不可用，可重试。 */
+    public static final int ERROR_CONNECTION_FAILED = 1011;
+    /** 网络连接意外断开，可重试。 */
+    public static final int ERROR_CONNECTION_LOST = 1012;
+    /** 文件或服务端资源不存在。 */
+    public static final int ERROR_SOURCE_NOT_FOUND = 1013;
+    /** 没有资源访问权限。 */
+    public static final int ERROR_ACCESS_DENIED = 1014;
+    /** 地址、请求或媒体数据无效。 */
+    public static final int ERROR_INVALID_SOURCE = 1015;
+    /** 当前构建不支持该协议。 */
+    public static final int ERROR_UNSUPPORTED_PROTOCOL = 1016;
+    /** 主动取消的诊断码，不通过 OnError 回调。 */
+    public static final int ERROR_OPERATION_CANCELLED = 1017;
     /** 未知错误。 */
     public static final int ERROR_UNKNOWN = 1999;
 
@@ -827,6 +855,8 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
     private boolean reconnecting = false;
     /** 重连代次，用于 stop / release 后让旧线程失效。 */
     private int reconnectGeneration = 0;
+    /** 当前或最近一轮重连；更换数据源或 reset 后清空。 */
+    private ReconnectSession reconnectSession;
     /** 最近一次 prepare 开始时间，单位毫秒。 */
     private long prepareStartTimeMs = 0L;
     /** 最近一次 prepare 耗时，单位毫秒。 */
@@ -946,6 +976,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         paused = false;
         reconnectCount = 0;
         reconnecting = false;
+        reconnectSession = null;
         resetPlaybackTiming();
         resetVideoSize();
         resetPlaybackEventFlags();
@@ -1106,7 +1137,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         }
     }
 
-    /** 设置自动重连最大次数和重连间隔。 */
+    /** 设置下一轮自动重连的最大次数和间隔；每次断线重新获得完整预算。 */
     public synchronized void setReconnectConfig(int maxRetryCount, long retryIntervalMs) {
         checkReleased();
         reconnectMaxCount = Math.max(0, maxRetryCount);
@@ -1118,20 +1149,28 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         return reconnectCount;
     }
 
-    /** 立即尝试重连当前 RTSP 数据源。 */
+    /** 返回当前或最近一轮重连阶段；不会等待阻塞的网络操作。 */
+    public synchronized ReconnectState getReconnectState() {
+        return reconnectSession == null ? ReconnectState.IDLE : reconnectSession.state;
+    }
+
+    /** 返回本轮实际尝试次数；等待期间不计数。 */
+    public synchronized int getReconnectAttemptCount() {
+        return reconnectSession == null ? 0 : reconnectSession.attempts;
+    }
+
+    /** 返回本轮最大尝试次数，没有重连记录时为零。 */
+    public synchronized int getReconnectMaxAttempts() {
+        return reconnectSession == null ? 0 : reconnectSession.maxAttempts;
+    }
+
+    /** 立即手动重连一次，不依赖自动重连开关；已有重连任务时复用该任务。 */
     public synchronized boolean reconnectImmediately() {
-        checkReleased();
-        if (currentDataSource == null || currentDataSource.length() == 0) {
-            return false;
-        }
-        boolean oldReconnectEnabled = reconnectEnabled;
-        int oldReconnectMaxCount = reconnectMaxCount;
-        reconnectEnabled = true;
-        reconnectMaxCount = Math.max(1, reconnectMaxCount);
-        boolean started = startReconnectIfNeededLocked(ERROR_NETWORK_TIMEOUT, "manual reconnect");
-        reconnectEnabled = oldReconnectEnabled;
-        reconnectMaxCount = oldReconnectMaxCount;
-        return started;
+        awaitControlFinishedLocked();
+        if (released) throw new IllegalStateException("ECHPlayer has been released");
+        if (reconnecting) return true;
+        if (!isRtspDataSourceLocked() || nativeTask != null || state == State.PREPARING) return false;
+        return startReconnectLocked(true, ERROR_NETWORK_TIMEOUT, "manual reconnect");
     }
 
     /** 获取当前播放统计快照。 */
@@ -1670,8 +1709,9 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
                 onPreparedListener.onPrepared(this);
             }
         } else {
-            int errorCode = mapPrepareErrorCode(lastPrepareResult);
-            if (!startReconnectIfNeededLocked(errorCode, lastPrepareResult)) {
+            int errorCode = nativeGetPrepareErrorCode(handle);
+            if (errorCode != ERROR_OPERATION_CANCELLED
+                    && !startReconnectIfNeededLocked(errorCode, lastPrepareResult)) {
                 dispatchError(errorCode, lastPrepareResult);
             }
         }
@@ -1853,6 +1893,7 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
             lastBufferingPercent = 100;
             reconnectCount = 0;
             reconnecting = false;
+            reconnectSession = null;
             resetPlaybackTiming();
             resetVideoSize();
             resetPlaybackEventFlags();
@@ -2372,6 +2413,8 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
 
     /** Native 回调：播放器错误事件。 */
     private synchronized void onNativeError(int errorCode, String message) {
+        // 重连准备期间只接收该次 prepare 的结果，丢弃旧解封装线程的迟到错误。
+        if (reconnecting || errorCode == ERROR_OPERATION_CANCELLED) return;
         postNativeEvent(() -> {
             if (startReconnectIfNeededLocked(errorCode, message)) {
                 return;
@@ -2686,20 +2729,27 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
 
     /** 取消当前正在等待或执行的重连任务。 */
     private void cancelReconnectLocked() {
+        if (reconnectSession != null) reconnectSession.cancel();
         reconnecting = false;
         reconnectGeneration++;
         notifyAll();
     }
 
-    /** 判断当前错误是否应该触发自动重连。 */
+    /** 只有明确的暂时性网络错误才触发 RTSP 自动重连。 */
     private boolean startReconnectIfNeededLocked(int errorCode, String message) {
-        if (!shouldReconnectLocked(errorCode)) {
+        if (reconnecting) return true;
+        if (!reconnectEnabled || reconnectMaxCount <= 0 || !ReconnectSession.isRetryable(errorCode)
+                || state == State.STOPPED || state == State.RELEASED || state == State.IDLE) {
             return false;
         }
-        if (reconnecting) {
-            return true;
-        }
+        return startReconnectLocked(false, errorCode, message);
+    }
 
+    /** 新建一轮独立重连，手动操作不改写自动重连配置。 */
+    private boolean startReconnectLocked(boolean manual, int errorCode, String message) {
+        if (released || nativeHandle == 0 || !isRtspDataSourceLocked()) return false;
+        reconnectSession = new ReconnectSession(manual, reconnectMaxCount,
+                reconnectIntervalMs, errorCode, message);
         reconnecting = true;
         playbackGeneration++;
         prepared = false;
@@ -2708,203 +2758,131 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         state = State.PREPARING;
         int generation = ++reconnectGeneration;
         String dataSource = currentDataSource;
-        String reason = message == null ? "" : message;
-
         Thread reconnectThread = new Thread(
-                () -> runReconnectLoop(generation, dataSource, errorCode, reason),
-                "ECHPlayer-Reconnect"
-        );
+                () -> runReconnectLoop(generation, dataSource), "ECHPlayer-Reconnect");
         reconnectThread.start();
-        dispatchNativeInvoke("reconnect-start", "source", dataSource, "reason", reason);
+        dispatchNativeInvoke("reconnect-start", "source", dataSource,
+                "reason", reconnectSession.reason);
         return true;
-    }
-
-    /** 判断当前状态和错误码是否允许自动重连。 */
-    private boolean shouldReconnectLocked(int errorCode) {
-        if (!reconnectEnabled || released || nativeHandle == 0 || reconnectMaxCount <= 0) {
-            return false;
-        }
-        if (!isRtspDataSourceLocked()) {
-            return false;
-        }
-        if (state == State.STOPPED || state == State.RELEASED || state == State.IDLE) {
-            return false;
-        }
-        return errorCode == ERROR_NETWORK_TIMEOUT
-                || errorCode == ERROR_OPEN_INPUT_FAILED
-                || errorCode == ERROR_STREAM_INFO_FAILED
-                || errorCode == ERROR_UNKNOWN;
     }
 
     /** 判断当前数据源是否是 RTSP 地址。 */
     private boolean isRtspDataSourceLocked() {
         String lowerSource = currentDataSource == null
-                ? ""
-                : currentDataSource.toLowerCase(Locale.US);
+                ? "" : currentDataSource.toLowerCase(Locale.US);
         return lowerSource.startsWith("rtsp://");
     }
 
-    /** 执行自动重连循环，直到成功、取消或达到最大次数。 */
-    private void runReconnectLoop(
-            int generation,
-            String dataSource,
-            int originalErrorCode,
-            String originalReason) {
-
-        while (true) {
-            int attempt;
-            long delayMs;
-            synchronized (this) {
-                if (!isReconnectActiveLocked(generation)) {
-                    return;
-                }
-                if (reconnectCount >= reconnectMaxCount) {
-                    finishReconnectFailedLocked(originalErrorCode, originalReason);
-                    return;
-                }
-                reconnectCount++;
-                attempt = reconnectCount;
-                delayMs = reconnectIntervalMs;
-                dispatchInfo(
-                        INFO_RECONNECTING,
-                        "reconnecting"
-                                + "\nattempt: " + attempt + "/" + reconnectMaxCount
-                                + "\nreason: " + originalReason
-                );
+    /** 执行一轮重连，等待可取消，失败使用最新原因决定是否继续。 */
+    private synchronized void runReconnectLoop(int generation, String dataSource) {
+        ReconnectSession session = reconnectSession;
+        while (isReconnectActiveLocked(generation)) {
+            if (session.state == ReconnectState.FAILED) {
+                finishReconnectFailedLocked(session);
+                return;
             }
-
-            if (delayMs > 0) {
-                synchronized (this) {
-                    long startedAt = SystemClock.elapsedRealtime();
-                    long remaining = delayMs;
-                    while (isReconnectActiveLocked(generation) && remaining > 0) {
-                        try {
-                            wait(remaining);
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            if (isReconnectActiveLocked(generation)) {
-                                finishReconnectFailedLocked(originalErrorCode, "reconnect interrupted");
-                            }
-                            return;
-                        }
-                        remaining = delayMs - (SystemClock.elapsedRealtime() - startedAt);
+            dispatchInfo(INFO_RECONNECTING, reconnectMessage(session));
+            if (!isReconnectActiveLocked(generation)) return;
+            long startedAt = SystemClock.elapsedRealtime();
+            long remaining = session.delayMs;
+            while (isReconnectActiveLocked(generation) && remaining > 0) {
+                try {
+                    wait(remaining);
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    if (isReconnectActiveLocked(generation)) {
+                        cancelReconnectLocked();
+                        state = State.STOPPED;
                     }
+                    return;
                 }
+                remaining = session.delayMs - (SystemClock.elapsedRealtime() - startedAt);
+            }
+            if (!isReconnectActiveLocked(generation)) return;
+
+            audioOutputStopped = true;
+            long handle = nativeHandle;
+            runNativeTaskLocked(() -> { nativeStop(handle); return null; });
+            if (!isReconnectActiveLocked(generation)) return;
+            releaseAudioTrack();
+            recordingState = RecordingState.IDLE;
+            resetPlaybackEventFlags();
+            nativeSetDataSource(handle, dataSource);
+            nativeSetRtspTransport(handle, rtspTransport);
+            nativeSetRenderMode(handle, renderMode);
+            nativeSetDecodeMode(handle, decodeMode);
+
+            if (!session.beginAttempt()) return;
+            reconnectCount++;
+            dispatchInfo(INFO_RECONNECTING, reconnectMessage(session));
+            if (!isReconnectActiveLocked(generation)) return;
+            markPrepareStarted();
+            nativeBeginPrepare(handle);
+            String result = runNativeTaskLocked(() -> nativePrepare(handle));
+            if (!isReconnectActiveLocked(generation)) return;
+            lastPrepareResult = result;
+            markPrepareFinished();
+            updateDecodeInfoFromNative();
+            prepared = result != null && result.startsWith("prepare success");
+            if (!prepared) {
+                session.failAttempt(nativeGetPrepareErrorCode(handle), result);
+                continue;
             }
 
-            synchronized (this) {
-                if (!isReconnectActiveLocked(generation)) {
-                    return;
-                }
-
-                audioOutputStopped = true;
-                long handle = nativeHandle;
-                runNativeTaskLocked(() -> { nativeStop(handle); return null; });
-                if (!isReconnectActiveLocked(generation)) {
-                    return;
-                }
-                releaseAudioTrack();
-                recordingState = RecordingState.IDLE;
-                resetPlaybackEventFlags();
-                prepared = false;
-                playing = false;
+            updateVideoSizeFromNative();
+            if (!isReconnectActiveLocked(generation)) return;
+            dispatchInfo(INFO_PREPARED, result);
+            if (!isReconnectActiveLocked(generation)) return;
+            dispatchBufferingUpdate(100);
+            if (!isReconnectActiveLocked(generation)) return;
+            markStartRequested();
+            audioOutputStopped = false;
+            lastStartResult = nativePlay(handle);
+            if (lastStartResult != null && (lastStartResult.startsWith("play started")
+                    || lastStartResult.startsWith("play ignored"))) {
+                playing = true;
                 paused = false;
-                state = State.PREPARING;
-
-                nativeSetDataSource(nativeHandle, dataSource);
-                nativeSetRtspTransport(nativeHandle, rtspTransport);
-                nativeSetRenderMode(nativeHandle, renderMode);
-                nativeSetDecodeMode(nativeHandle, decodeMode);
-
-                markPrepareStarted();
-                nativeBeginPrepare(handle);
-                String result = runNativeTaskLocked(() -> nativePrepare(handle));
-                if (!isReconnectActiveLocked(generation)) {
-                    return;
-                }
-                lastPrepareResult = result;
-                markPrepareFinished();
-                updateDecodeInfoFromNative();
-                prepared = lastPrepareResult != null
-                        && lastPrepareResult.startsWith("prepare success");
-                if (!prepared) {
-                    dispatchInfo(
-                            INFO_RECONNECTING,
-                            "reconnect attempt failed"
-                                    + "\nattempt: " + attempt + "/" + reconnectMaxCount
-                                    + "\nresult: " + lastPrepareResult
-                    );
-                    continue;
-                }
-
-                updateVideoSizeFromNative();
-                if (!isReconnectActiveLocked(generation)) {
-                    return;
-                }
-                dispatchInfo(INFO_PREPARED, lastPrepareResult);
-                if (!isReconnectActiveLocked(generation)) {
-                    return;
-                }
-                dispatchBufferingUpdate(100);
-                if (!isReconnectActiveLocked(generation)) {
-                    return;
-                }
-
-                markStartRequested();
-                audioOutputStopped = false;
-                lastStartResult = nativePlay(nativeHandle);
-                if (lastStartResult != null
-                        && (lastStartResult.startsWith("play started")
-                        || lastStartResult.startsWith("play ignored"))) {
-                    playing = true;
-                    paused = false;
-                    state = State.STARTED;
-                    reconnecting = false;
-                    completionDispatched = false;
-                    dispatchInfo(
-                            INFO_RECONNECTED,
-                            "reconnected"
-                                    + "\nattempt: " + attempt + "/" + reconnectMaxCount
-                                    + "\nsource: " + dataSource
-                    );
-                    dispatchInfo(INFO_PLAY_STARTED, lastStartResult);
-                    return;
-                }
-
-                dispatchInfo(
-                        INFO_RECONNECTING,
-                        "reconnect start failed"
-                                + "\nattempt: " + attempt + "/" + reconnectMaxCount
-                                + "\nresult: " + lastStartResult
-                );
+                state = State.STARTED;
+                reconnecting = false;
+                completionDispatched = false;
+                session.succeed();
+                long playback = playbackGeneration;
+                dispatchInfo(INFO_RECONNECTED, reconnectMessage(session));
+                // 监听器可能同步 stop/reset/release，不再发送旧的播放启动通知。
+                if (isPlaybackCurrentLocked(playback)) dispatchInfo(INFO_PLAY_STARTED, lastStartResult);
+                return;
             }
+            prepared = false;
+            audioOutputStopped = true;
+            session.failAttempt(mapPlaybackErrorCode(lastStartResult), lastStartResult);
         }
+    }
+
+    /** 格式化本轮状态，次数表示实际连接尝试，不包含等待。 */
+    private String reconnectMessage(ReconnectSession session) {
+        return "reconnect state: " + session.state
+                + "\nattempt: " + session.attempts + "/" + session.maxAttempts
+                + "\nerrorCode: " + session.errorCode + "\nreason: " + session.reason;
     }
 
     /** 判断指定重连代次是否仍然有效。 */
     private boolean isReconnectActiveLocked(int generation) {
-        return reconnecting
-                && controlThread == null
-                && !released
-                && nativeHandle != 0
-                && reconnectGeneration == generation;
+        return reconnecting && controlThread == null && !released
+                && nativeHandle != 0 && reconnectGeneration == generation;
     }
 
-    /** 结束自动重连并分发最终错误。 */
-    private void finishReconnectFailedLocked(int errorCode, String reason) {
+    /** 结束重连并分发最后一次错误；监听器取消后不继续发送旧通知。 */
+    private void finishReconnectFailedLocked(ReconnectSession session) {
         reconnecting = false;
         prepared = false;
         playing = false;
         paused = false;
         state = State.ERROR;
-        dispatchInfo(
-                INFO_RECONNECT_FAILED,
-                "reconnect failed"
-                        + "\nattempts: " + reconnectCount + "/" + reconnectMaxCount
-                        + "\nreason: " + reason
-        );
-        dispatchNativeInvoke("reconnect-failed", "reason", reason);
-        dispatchError(errorCode, reason);
+        long generation = playbackGeneration;
+        dispatchInfo(INFO_RECONNECT_FAILED, reconnectMessage(session));
+        if (!isPlaybackCurrentLocked(generation)) return;
+        dispatchNativeInvoke("reconnect-failed", "reason", session.reason);
+        if (isPlaybackCurrentLocked(generation)) dispatchError(session.errorCode, session.reason);
     }
 
     /** 分发视频尺寸变化回调。 */
@@ -3525,34 +3503,6 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
         seeking = false;
     }
 
-    /** 根据 prepare 结果映射错误码。 */
-    private int mapPrepareErrorCode(String result) {
-        if (result == null) {
-            return ERROR_UNKNOWN;
-        }
-        if (result.contains("avformat_open_input")) {
-            String lowerResult = result.toLowerCase();
-            if (result.contains("401 Unauthorized")
-                    || lowerResult.contains("unauthorized")
-                    || result.contains("鉴权失败")) {
-                return ERROR_RTSP_AUTH_FAILED;
-            }
-            if (result.contains("Connection timed out")
-                    || lowerResult.contains("timed out")
-                    || lowerResult.contains("timeout")) {
-                return ERROR_NETWORK_TIMEOUT;
-            }
-            return ERROR_OPEN_INPUT_FAILED;
-        }
-        if (result.contains("avformat_find_stream_info")) {
-            return ERROR_STREAM_INFO_FAILED;
-        }
-        if (result.contains("no video stream")) {
-            return ERROR_NO_VIDEO_STREAM;
-        }
-        return ERROR_UNKNOWN;
-    }
-
     /** 根据播放结果映射错误码。 */
     private int mapPlaybackErrorCode(String result) {
         if (result == null) {
@@ -3601,6 +3551,9 @@ public class ECHPlayer implements IECHMediaPlayer, AutoCloseable {
 
     /** 调用 NativePlayer.prepare。 */
     private native String nativePrepare(long nativeHandle);
+
+    /** 读取 Native 准备结果错误码，成功为零。 */
+    private native int nativeGetPrepareErrorCode(long nativeHandle);
 
     /** 在任务启动前清除上一轮 I/O 取消标记。 */
     private native void nativeBeginPrepare(long nativeHandle);

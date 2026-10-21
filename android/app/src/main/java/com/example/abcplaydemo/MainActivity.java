@@ -824,9 +824,21 @@ public class MainActivity extends AppCompatActivity {
             case ECHPlayer.ERROR_DECODER_OPEN_FAILED:
                 return "打开解码器失败";
             case ECHPlayer.ERROR_NETWORK_TIMEOUT:
-                return "网络读取超时";
+                return "网络连接或读取超时";
             case ECHPlayer.ERROR_RTSP_AUTH_FAILED:
-                return "RTSP 鉴权失败";
+                return "鉴权失败，请检查用户名和密码";
+            case ECHPlayer.ERROR_CONNECTION_FAILED:
+                return "无法连接服务，请检查设备和网络";
+            case ECHPlayer.ERROR_CONNECTION_LOST:
+                return "网络连接已断开";
+            case ECHPlayer.ERROR_SOURCE_NOT_FOUND:
+                return "媒体资源不存在，请检查地址";
+            case ECHPlayer.ERROR_ACCESS_DENIED:
+                return "没有资源访问权限";
+            case ECHPlayer.ERROR_INVALID_SOURCE:
+                return "播放地址、请求或媒体数据无效";
+            case ECHPlayer.ERROR_UNSUPPORTED_PROTOCOL:
+                return "不支持该播放协议";
             case ECHPlayer.ERROR_RENDER_SURFACE_INVALID:
                 return "渲染 Surface 无效";
             case ECHPlayer.ERROR_RECORD_FAILED:
@@ -1147,7 +1159,14 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         if (player.getState() == ECHPlayer.State.PREPARING) {
-            decodeStatusText.setText("正在连接或重连，可点击停止取消");
+            ECHPlayer.ReconnectState reconnect = player.getReconnectState();
+            String phase = reconnect == ECHPlayer.ReconnectState.WAITING ? "等待重连"
+                    : reconnect == ECHPlayer.ReconnectState.CONNECTING ? "正在重连" : "正在连接";
+            String attempts = reconnect == ECHPlayer.ReconnectState.WAITING
+                    || reconnect == ECHPlayer.ReconnectState.CONNECTING
+                    ? "（已尝试 " + player.getReconnectAttemptCount()
+                    + "/" + player.getReconnectMaxAttempts() + " 次）" : "";
+            decodeStatusText.setText(phase + attempts + "，可点击停止取消");
             return;
         }
 

@@ -65,6 +65,9 @@ public:
     /** 在启动准备任务前清除上一轮取消标记，调用方保证旧任务已退出。 */
     void beginPrepare();
 
+    /** 返回最近一次准备结果的稳定错误码；成功为零。 */
+    int getPrepareErrorCode() const;
+
     /** 仅设置原子标记，允许与网络准备、读取并发调用。 */
     void requestInterrupt();
 
@@ -167,6 +170,8 @@ private:
     static int interruptIo(void *opaque);
     /** 取消请求与网络操作期限。 */
     IoInterrupt ioInterrupt;
+    /** 准备错误的数值结果，与可读日志分开传递。 */
+    std::atomic<int> prepareErrorCode{0};
     /** 当前数据源路径或 URL。 */
     std::string dataSource;
     /** 输入格式上下文。 */
